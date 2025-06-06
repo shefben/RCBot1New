@@ -4,6 +4,7 @@
 #include <vector>
 #include <stdint.h>
 #include "rcbot_base.h"
+#include "rcbot_long_term_memory.h"
 
 #define BOT_MANAGER_DEFAULT_ADD_REMOVE_BOT_PERIOD 5.0f
 
@@ -24,6 +25,7 @@ public:
 	}
 
 	RCBotBase* getBotByEdict(edict_t* pEdict);
+	const std::vector<RCBotBase*>& getActiveBots() const; // Added to get bot list
 
 private:
 	RCBotBase* AddBot();
@@ -32,6 +34,7 @@ private:
 	uint8_t m_iQuota;
 	float m_fAddRemoveBotTime;
 	float m_fNodeDrawTime;
+	RCBotLongTermMemory m_longTermMemory;
 };
 
 extern RCBotManager gRCBotManager;

@@ -4,6 +4,16 @@
 #include "extdll.h"
 #include "rcbot_ehandle.h"
 #include <stdint.h>
+#include "rcbot_short_term_memory.h"
+#include "rcbot_long_term_memory.h" // Added for LTM
+#include <set> // For std::set
+#include <map> // For std::map
+#include <string> // For std::string
+#include "rcbot_macro_action.h" // For Macro Actions
+#include "rcbot_chat_types.h"   // For BotPersona
+#include "rcbot_chat_manager.h" // For g_ChatManager
+#include "rcbot_chat_history.h" // For RCBotChatHistory
+#include <deque>                // For std::deque
 
 class RCBotProfile;
 class RCBotVisibles;
@@ -77,6 +87,7 @@ public:
 
 	void setProfile(RCBotProfile *profile);
 	void setEdict(edict_t *pEdict);
+	void setLongTermMemory(RCBotLongTermMemory* ltm); // Added for LTM
 	
 	virtual void setUpClientInfo();
 
@@ -190,6 +201,79 @@ private:
 	bool m_bPreviousAliveState;
 
 	float m_fSpeedPercent;
+
+	RCBotShortTermMemory m_shortTermMemory; // bot short term memory
+	RCBotLongTermMemory* m_pLongTermMemory; // Pointer to the LTM system
+
+	// Curiosity and Novelty Detection
+	float m_curiosityScore;
+	std::set<std::string> m_encounteredEntityClasses;
+	std::set<int> m_visitedWaypoints; // Assuming waypoint IDs are integers
+	std::map<std::string, float> m_itemCuriosity; // Key: entity classname or waypoint_ID as string
+
+public:
+	// Constants for curiosity - can be moved to a config file later
+	static const float NEW_ENTITY_BONUS = 10.0f;
+	static const float NEW_AREA_BONUS = 15.0f; // Waypoint based
+	static const float CURIOSITY_DECAY_RATE = 0.995f; // Per Think cycle
+	static const float ITEM_CURIOSITY_DECAY_RATE = 0.99f; // Per Think cycle for specific items
+
+	// Objective Interest System
+	std::map<std::string, float> m_objectiveInterests; // Key: objective identifier, Value: interest score
+	std::string m_currentFocusObjective;
+
+public:
+	// Constants for interest system
+	static const float INTEREST_DECAY_RATE = 0.99f; // Per Think cycle
+	static const float INITIAL_OBJECTIVE_INTEREST = 5.0f; // Default interest for new objectives from curiosity
+	static const float CURIOSITY_TO_INTEREST_THRESHOLD = 10.0f; // Min item curiosity to generate an objective
+
+	// Macro Action System
+	std::map<std::string, RCBotMacroAction> m_macroActions;
+	RCBotMacroAction* m_currentMacroAction;
+
+public:
+	void loadMacroActions();
+	void startMacroAction(const std::string& name);
+	void stopCurrentMacroAction();
+
+	// Persona
+	void setPersona(BotPersona persona);
+	BotPersona getPersona() const;
+	void evaluateAndAdjustPersona(); // Method to adjust persona based on feedback
+
+	// Chat
+	void sayChat(const std::string& context_trigger);
+	// Store own recent messages for context (e.g., checking for replies)
+	std::deque<TaggedChatMessage> m_sentChatMessages;
+	static const size_t MAX_SENT_CHAT_HISTORY = 10; // Keep last 10 messages
+
+	// Placeholder metrics for persona adjustment
+	float m_lastTauntTime;
+	int m_damageTakenPostTaunt; // Conceptual: damage taken shortly after a taunt
+	float m_engagementScore;    // Conceptual: increases with positive interactions
+	float m_aggressivenessScore; // Conceptual: tracks performance of aggressive actions/chats
+    float m_timeSinceLastPersonaEvaluation;
+
+	RCBotChatHistory m_chatContextMemory; // For storing chat and game event context
+
+	// Reward Shaping for Objectives
+	float m_previousDistanceToFocusObjective;
+	Vector m_focusObjectiveLocation;
+	bool m_hasFocusObjectiveLocation;
+	float m_shapingRewardAccumulator; // Optional, not used in initial implementation
+
+public:
+	RCBotChatHistory* getChatContextMemory() { return &m_chatContextMemory; }
+
+	// Constants for Reward Shaping
+	static const float SHAPING_REWARD_MULTIPLIER = 0.05f;
+	static const float SIGNIFICANT_PROGRESS_THRESHOLD = 1.0f; // Min distance change to get reward
+	static const float INTEREST_BOOST_FROM_SHAPING_FACTOR = 0.01f;
+
+
+private: // Make persona private and expose via getter/setter
+	BotPersona m_persona;
 };
 
 #endif 

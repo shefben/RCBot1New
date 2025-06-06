@@ -418,6 +418,16 @@ public:
 	}
 };
 
+class RCBotCommand_ChatContextCommand : public RCBotCommand
+{
+public:
+    RCBotCommand_ChatContextCommand() : RCBotCommand("chat_context", "Displays the chat context window for a bot.", "[bot_name_or_id|all]")
+    {
+    }
+
+    RCBotCommandReturn execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) override;
+};
+
 
 extern RCBotCommands_MainCommand *gRCBotCommands;
 

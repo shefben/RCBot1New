@@ -11,7 +11,11 @@
 #include "rcbot_manager.h"
 #include "rcbot_navigator.h"
 #include "rcbot_profile.h"
+#include "rcbot_chat_history.h" // For ContextualItem and RCBotChatHistory
+#include "rcbot_base.h"         // For RCBotBase
+#include "util.h"               // For UTIL_ClientPrint (assuming it's here)
 #include <stdint.h>
+#include <string.h> // For stricmp
 
 #define RCBOT_ACCESSORS_FILE "rcbot_accesslevels"
 #define RCBOT_ACCESSORS_FOLDER "accessors"
@@ -177,6 +181,7 @@ RCBotCommands_MainCommand::RCBotCommands_MainCommand() : RCBotCommands("rcbot")
 	addCommand(new RCBotCommands_UtilCommand());
 	addCommand(new RCBotCommands_WaypointCommand());
 	addCommand(new RCBotCommands_PathWaypointCommand());
+	addCommand(new RCBotCommand_ChatContextCommand()); // Add the new command
 }
 
 RCBotCommands_BotCommand::RCBotCommands_BotCommand() : RCBotCommands("bot")
@@ -189,6 +194,87 @@ RCBotCommandReturn RCBotCommand_AddBotCommand::execute(edict_t* pClient, const c
 	gRCBotManager.IncreaseQuota();
 
 	return RCBotCommandReturn::Ok;
+}
+
+RCBotCommandReturn RCBotCommand_ChatContextCommand::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) {
+    if (!pClient) { // Should be called by a player
+        UTIL_ServerPrintf("rcbot chat_context: This command must be issued by a player.\n");
+        return RCBotCommandReturn::Ok;
+    }
+
+    std::vector<RCBotBase*> bots_to_display;
+    bool display_all = false;
+
+    if (!arg1 || !*arg1 || stricmp(arg1, "all") == 0) {
+        display_all = true;
+        const auto& active_bots = gRCBotManager.getActiveBots();
+        for (RCBotBase* bot : active_bots) {
+            bots_to_display.push_back(bot);
+        }
+        if (bots_to_display.empty() && display_all) {
+             UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] No active bots to display context for.\n");
+            return RCBotCommandReturn::Ok;
+        }
+    } else {
+        // Try to find bot by name or ID (ID not implemented, using name)
+        RCBotBase* found_bot = nullptr;
+        const auto& active_bots = gRCBotManager.getActiveBots();
+        for (RCBotBase* bot : active_bots) {
+            if (bot->getEdict() && STRING(bot->getEdict()->v.netname) && stricmp(STRING(bot->getEdict()->v.netname), arg1) == 0) {
+                found_bot = bot;
+                break;
+            }
+        }
+        if (found_bot) {
+            bots_to_display.push_back(found_bot);
+        } else {
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Bot '%s' not found.\n", arg1);
+            return RCBotCommandReturn::Ok;
+        }
+    }
+
+    if (bots_to_display.empty()){
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] No matching bots found to display context for.\n");
+        return RCBotCommandReturn::Ok;
+    }
+
+
+    for (RCBotBase* bot_to_show : bots_to_display) {
+        if (!bot_to_show || !bot_to_show->getEdict()) continue;
+
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "--- Chat Context for Bot: %s ---\n", STRING(bot_to_show->getEdict()->v.netname));
+        RCBotChatHistory* context_history = bot_to_show->getChatContextMemory();
+        if (context_history) {
+            const auto& window = context_history->getContextWindow();
+            if (window.empty()) {
+                UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "  (Context window is empty)\n");
+            } else {
+                for (const auto& item : window) {
+                    char item_info[256];
+                    if (item.type == ContextItemType::CHAT_MESSAGE) {
+                        snprintf(item_info, sizeof(item_info), "  CHAT (ts:%.1f) S:%d P:%d: %s\n",
+                                 item.timestamp,
+                                 static_cast<int>(item.chat_message.sentiment),
+                                 static_cast<int>(item.chat_message.persona_at_time_of_sending),
+                                 item.chat_message.message.c_str());
+                    } else if (item.type == ContextItemType::GAME_EVENT) {
+                        snprintf(item_info, sizeof(item_info), "  GAME_EVENT (ts:%.1f) Type:%d Dmg:%.1f\n",
+                                 item.timestamp,
+                                 static_cast<int>(item.game_event.type),
+                                 item.game_event.damageAmount);
+                    } else {
+                        snprintf(item_info, sizeof(item_info), "  UNKNOWN ITEM (ts:%.1f)\n", item.timestamp);
+                    }
+                    UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, item_info);
+                }
+            }
+        } else {
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "  Error: Could not retrieve context history for this bot.\n");
+        }
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "--- End Context for Bot: %s ---\n", STRING(bot_to_show->getEdict()->v.netname));
+    }
+
+    return RCBotCommandReturn::Ok;
 }
 
 RCBotCommandReturn RCBotCommands_MainCommand::ClientCommand()

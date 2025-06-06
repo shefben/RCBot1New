@@ -7,6 +7,7 @@
 #include "rcbot_engine_funcs.h"
 #include "rcbot_utils.h"
 #include "rcbot_navigator.h"
+#include "rcbot_chat_manager.h" // For g_ChatManager
 /// <summary>
 /// 
 /// </summary>
@@ -35,6 +36,7 @@ RCBotManager::RCBotManager()
 	m_iQuota = 0;
 	m_fAddRemoveBotTime = 0.0f;
 	m_fNodeDrawTime = 0.0f;
+	// m_longTermMemory is implicitly default-constructed
 }
 /// <summary>
 /// 
@@ -118,6 +120,7 @@ RCBotBase *RCBotManager::AddBot()
 
 				pBot->setEdict(pBotEdict);
 				pBot->setProfile(profile);
+				pBot->setLongTermMemory(&m_longTermMemory); // Set LTM for the bot
 				pBot->setUpClientInfo();
 
 				MDLL_ClientConnect(pBotEdict, nullptr, "127.0.0.1", ptr);
@@ -133,6 +136,11 @@ RCBotBase *RCBotManager::AddBot()
 
 	return nullptr;
 }
+
+const std::vector<RCBotBase*>& RCBotManager::getActiveBots() const {
+    return m_Bots;
+}
+
 /// <summary>
 /// 
 /// </summary>
@@ -190,4 +198,34 @@ void RCBotManager::LevelInit()
 	OnLevelChange();
 
 	gRCBotNavigatorNodes->mapInit();
+
+	// Placeholder: Archive a dummy episode at the start of a new level
+	// In a real scenario, this would be at the *end* of an episode/round/match
+	// and would collect actual data from the game and bots.
+	if (true) { // Condition for when to archive (e.g., end of round)
+		Episode dummyEpisode;
+		dummyEpisode.metadata.mapName = STRING(gpGlobals->mapname);
+		dummyEpisode.metadata.timestamp = static_cast<long>(gpGlobals->time);
+		dummyEpisode.metadata.outcome = "pending"; // Or "map_start"
+		dummyEpisode.metadata.gameCvars["sv_cheats"] = CVAR_GET_STRING("sv_cheats");
+		dummyEpisode.metadata.gameCvars["mp_timelimit"] = CVAR_GET_STRING("mp_timelimit");
+
+		// Add some dummy events
+		// GameEvent(GameEventType type, float timestamp, float damageAmount)
+		if (!m_Bots.empty()) { // Example: take some events from the first bot's STM if available
+		    // This is just a conceptual placeholder.
+		    // Actual event collection would be more sophisticated.
+		    // dummyEpisode.events = m_Bots[0]->getShortTermMemory().getAllEvents(); // If such getter existed
+		}
+        GameEvent event1(DAMAGE_EVENT, gpGlobals->time - 10.0f, 25.0f);
+        dummyEpisode.events.push_back(event1);
+        GameEvent event2(HEAR_SOUND_EVENT, gpGlobals->time - 5.0f, 0.0f); // damageAmount not relevant for sound
+        dummyEpisode.events.push_back(event2);
+
+
+		m_longTermMemory.archiveEpisode(dummyEpisode);
+	}
+
+	// Initialize/Re-initialize chat models for the new level
+	g_ChatManager.initializeChatModels();
 }

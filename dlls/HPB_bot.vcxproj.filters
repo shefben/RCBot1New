@@ -33,6 +33,24 @@
     <ClCompile Include="rcbot_profile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="rcbot_short_term_memory.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rcbot_chat_history.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rcbot_chat_manager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rcbot_long_term_memory.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rcbot_macro_action.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rcbot_ngram_model.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="rcbot_strings.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -107,6 +125,9 @@
     <ClInclude Include="rcbot_profile.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="rcbot_short_term_memory.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="rcbot_strings.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -153,6 +174,24 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rcbot_colour.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_long_term_memory.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_macro_action.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_chat_manager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_chat_types.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_chat_history.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_ngram_model.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rcbot_ehandle.h">

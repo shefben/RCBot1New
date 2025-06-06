@@ -648,6 +648,8 @@ public:
 	// do visibility etc...
 	void DoVisibility();
 
+    const std::vector<RCBotNavigatorNode*>& getUsedNodes() const { return m_UsedNodes; } // Getter for m_UsedNodes
+
 protected:
 	RCBotNodeTypes* m_NodeTypes;
 
