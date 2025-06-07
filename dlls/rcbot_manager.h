@@ -31,6 +31,11 @@ public:
 	void ProcessPlayerDeathEvent(edict_t* pVictimEdict, edict_t* pAttackerEdict); // Handles player death events
 	void SimulateBombPlantedEvent(edict_t* pBombSiteObjectiveEdict, edict_t* pPlanterEdict); // Simulates a bomb plant
 
+    // Public debug flags for global game state simulation
+    bool m_debug_g_bomb_planted;
+    bool m_debug_g_flag_loose_t1;
+    bool m_debug_g_flag_loose_t2;
+
 private:
 	RCBotBase* AddBot();
 

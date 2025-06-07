@@ -16,7 +16,7 @@
 #include "util.h"               // For UTIL_ClientPrint, UTIL_ServerPrintf etc.
 #include "rcbot_dynamic_objectives.h" // For g_ObjectiveManager
 #include <stdint.h>
-#include <string.h> // For stricmp
+#include <string.h> // For stricmp, strncmp
 #include <vector>   // For std::vector in ShowObjectives
 #include <iomanip>  // For std::fixed, std::setprecision if printing floats neatly
 
@@ -187,6 +187,7 @@ RCBotCommands_MainCommand::RCBotCommands_MainCommand() : RCBotCommands("rcbot")
 	addCommand(new RCBotCommand_ChatContextCommand());
     addCommand(new RCBotCommand_ShowObjectives());
     addCommand(new RCBotCommand_ResetObjectives());
+    // Note: RCBotCommand_ObjectiveDebugFlag is added in RCBotCommands_UtilCommand constructor
 }
 
 RCBotCommands_BotCommand::RCBotCommands_BotCommand() : RCBotCommands("bot")
@@ -284,6 +285,92 @@ RCBotCommandReturn RCBotCommand_ResetObjectives::execute(edict_t* pClient, const
     }
     return RCBotCommandReturn::Ok;
 }
+
+RCBotCommand_ObjectiveDebugFlag::RCBotCommand_ObjectiveDebugFlag()
+    : RCBotCommand("objective_debug_flag",
+                   "Sets debug flags for objective simulation. Usage: <flag_name> <0|1> [bot_name_or_global]",
+                   "objective_debug_flag <flag_name> <value> [target]") {}
+
+RCBotCommandReturn RCBotCommand_ObjectiveDebugFlag::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) {
+    if (!pClient) {
+        UTIL_ServerPrintf("objective_debug_flag: This command must be issued by a player in-game.\n");
+        return RCBotCommandReturn::Ok;
+    }
+
+    const char* flag_name = arg1;
+    const char* value_str = arg2;
+    const char* target_name = arg3; // Optional: bot name or "global"
+
+    if (!flag_name || !*flag_name || !value_str || !*value_str) {
+        showUsage(pClient);
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "Available flags: bomb_planted, flag_loose_team1, flag_loose_team2, bot_has_bomb, bot_has_enemy_flag, bot_enemy_flag_team_id\n");
+        return RCBotCommandReturn::Ok;
+    }
+
+    int value = atoi(value_str);
+    if (value != 0 && value != 1) {
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "Invalid value for flag. Must be 0 or 1.\n");
+        showUsage(pClient);
+        return RCBotCommandReturn::Ok;
+    }
+
+    bool target_is_global = (!target_name || !*target_name || stricmp(target_name, "global") == 0);
+
+    if (stricmp(flag_name, "bomb_planted") == 0) {
+        gRCBotManager.m_debug_g_simulate_bomb_is_planted = (value == 1);
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Global debug flag 'bomb_planted' set to %d.\n", value);
+    } else if (stricmp(flag_name, "flag_loose_team1") == 0) {
+        gRCBotManager.m_debug_g_simulate_flag_is_loose_team1 = (value == 1);
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Global debug flag 'flag_loose_team1' set to %d.\n", value);
+    } else if (stricmp(flag_name, "flag_loose_team2") == 0) {
+        gRCBotManager.m_debug_g_simulate_flag_is_loose_team2 = (value == 1);
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Global debug flag 'flag_loose_team2' set to %d.\n", value);
+    } else if (strncmp(flag_name, "bot_", 4) == 0) { // Bot-specific flags
+        if (target_is_global) {
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Error: Bot-specific flag '%s' requires a bot name.\n", flag_name);
+            showUsage(pClient);
+            return RCBotCommandReturn::Ok;
+        }
+        RCBotBase* target_bot = nullptr;
+        const auto& active_bots = gRCBotManager.getActiveBots();
+        for (RCBotBase* bot : active_bots) {
+            if (bot->getEdict() && STRING(bot->getEdict()->v.netname) && stricmp(STRING(bot->getEdict()->v.netname), target_name) == 0) {
+                target_bot = bot;
+                break;
+            }
+        }
+
+        if (!target_bot) {
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Bot '%s' not found for flag '%s'.\n", target_name, flag_name);
+            return RCBotCommandReturn::Ok;
+        }
+
+        if (stricmp(flag_name, "bot_has_bomb") == 0) {
+            target_bot->m_debug_sim_has_bomb = (value == 1);
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Bot '%s' flag 'has_bomb' set to %d.\n", target_name, value);
+        } else if (stricmp(flag_name, "bot_has_enemy_flag") == 0) {
+            target_bot->m_debug_sim_has_enemy_flag = (value == 1);
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Bot '%s' flag 'has_enemy_flag' set to %d.\n", target_name, value);
+        } else if (stricmp(flag_name, "bot_enemy_flag_team_id") == 0) {
+            // For this one, the value is the team ID (1 or 2), not just 0/1
+            if (value < 1 || value > 2) {
+                 UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "Invalid value for bot_enemy_flag_team_id. Must be 1 or 2.\n");
+                 return RCBotCommandReturn::Ok;
+            }
+            target_bot->m_debug_sim_enemy_flag_team_id = value;
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Bot '%s' flag 'enemy_flag_team_id' set to %d.\n", target_name, value);
+        } else {
+            UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Unknown bot-specific flag: %s\n", flag_name);
+            showUsage(pClient);
+        }
+    } else {
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Unknown flag name: %s\n", flag_name);
+        showUsage(pClient);
+    }
+
+    return RCBotCommandReturn::Ok;
+}
+
 
 RCBotCommandReturn RCBotCommand_ChatContextCommand::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) {
     if (!pClient) { // Should be called by a player
@@ -465,6 +552,18 @@ RCBotCommandReturn RCBotCommand_GodModeCommand::execute(edict_t* pClient, const 
 }
 
 //////////////////////////////////////////////////
+// UTIL COMMANDS
+//////////////////////////////////////////////////
+RCBotCommands_UtilCommand::RCBotCommands_UtilCommand() : RCBotCommands("util")
+{
+    addCommand(new RCBotCommand_TeleportToPlayerCommand());
+    addCommand(new RCBotCommand_NoClipCommand());
+    addCommand(new RCBotCommand_GodModeCommand());
+    addCommand(new RCBotCommand_ObjectiveDebugFlag()); // Added the new command here
+}
+
+
+//////////////////////////////////////////////////
 // WAYPOINT COMMANDS
 //////////////////////////////////////////////////
 
@@ -627,6 +726,13 @@ RCBotCommandReturn RCBotCommand_PathWaypoint_Remove2_Command::execute(edict_t* p
 ///////////////////////////////////////////
 // WAYPOINT TYPE COMMANDS
 ///////////////////////////////////////////
+RCBotCommandsWaypointTypeCommands::RCBotCommandsWaypointTypeCommands() : RCBotCommands("type")
+{
+    addCommand(new RCBotCommand_Type_Add_Command());
+    addCommand(new RCBotCommand_Type_Remove_Command());
+    addCommand(new RCBotCommand_Type_Clear_Command());
+}
+
 
 // TO DO - add a waypoint type
 RCBotCommandReturn RCBotCommand_Type_Add_Command::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5)
@@ -659,3 +765,12 @@ RCBotCommandReturn RCBotCommand_Type_Clear_Command::execute(edict_t* pClient, co
 	return RCBotCommandReturn::Ok;
 }
 
+///////////////////////////////////////////
+// PROFILE COMMANDS
+///////////////////////////////////////////
+RCBotCommands_ProfileCommand::RCBotCommands_ProfileCommand() : RCBotCommands("profile")
+{
+	addCommand(new RCBotCommand_AddProfileCommand());
+	addCommand(new RCBotCommand_RemoveProfileCommand());
+	addCommand(new RCBotCommand_ListProfilesCommand());
+}

@@ -41,6 +41,8 @@ static const uint8_t DYNAMIC_OBJECTIVE_MOVE_PRIORITY = 3;
 // Simulated game state flags for testing objective interactions
 static bool g_debug_simulate_bomb_is_planted = false;
 // (If multiple sites, might need g_debug_simulate_bomb_planted_at_A, g_debug_simulate_bomb_planted_at_B)
+static bool g_debug_simulate_flag_is_loose_team1 = false;
+static bool g_debug_simulate_flag_is_loose_team2 = false;
 
 // Interaction Durations (defined in RLConsts in RCBotRLHelper.h, no need to redefine here)
 // static const float INTERACTION_DEFUSE_TIME_CONST = 7.0f; // Example
@@ -87,6 +89,8 @@ RCBotBase ::RCBotBase()
     m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
     m_objectiveInteractionDuration = 0.0f;
     m_debug_sim_has_bomb = false;
+    m_debug_sim_has_enemy_flag = false;
+    m_debug_sim_enemy_flag_team_id = 0;
 
 	Init(); // Calls spawnInit
     loadMacroActions(); // From macro subtask
@@ -159,6 +163,8 @@ void RCBotBase::spawnInit()
     m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
     m_objectiveInteractionDuration = 0.0f;
     m_debug_sim_has_bomb = false;
+    m_debug_sim_has_enemy_flag = false;
+    m_debug_sim_enemy_flag_team_id = 0;
 }
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
@@ -315,41 +321,35 @@ void RCBotBase::Think()
 	m_pVisibles->tasks(m_pProfile->getVisRevs()); // This might change m_pEnemy (e.g. newVisible, lostVisible)
     // m_chosenAIActionThisFrame should be set by the above AI logic based on current state.
 
-    // --- Dynamic Objective Selection Logic ---
+    // --- Dynamic Objective Selection Logic (Part 1: Selection) ---
     bool pursued_dynamic_objective_this_frame = false;
-    if (isAlive() && m_pEdict) { // Only select dynamic objectives if alive
+    std::string selected_objective_id = ""; // Keep this name for clarity in this combined block
+    // Vector selected_objective_location; // Not needed here anymore, obj_meta->location used directly
+
+    if (isAlive() && m_pEdict) {
         const auto& candidates = g_ObjectiveManager.getObjectiveCandidates();
         if (!candidates.empty()) {
-            float best_score = -std::numeric_limits<float>::max(); // Use std::numeric_limits
-            std::string selected_objective_id = "";
-            Vector selected_objective_location;
+            float best_score = -std::numeric_limits<float>::max();
+            // selected_objective_id is initialized above
+            // selected_objective_location is not needed here anymore
 
             for (const auto& pair : candidates) {
                 const ObjectiveCandidateMetadata& obj = pair.second;
-
                 if (!obj.is_active || obj.confidence < MIN_CONFIDENCE_FOR_DYNAMIC_OBJECTIVE) {
                     continue;
                 }
-
                 float distance_to_objective = (obj.location - m_pEdict->v.origin).Length();
                 float score = obj.confidence - (distance_to_objective * DISTANCE_PENALTY_FACTOR_DYN_OBJ);
-
-                // Optional: Add bonus for categories bot might prefer based on its role/state
-                // if (obj.category_tag == ObjectiveCategoryType::WEAPON_ITEM && needs_weapon()) score += 0.1f;
-
                 if (score > best_score) {
                     best_score = score;
                     selected_objective_id = obj.unique_id;
-                    selected_objective_location = obj.location;
                 }
             }
 
             if (!selected_objective_id.empty()) {
                 ObjectiveCandidateMetadata* obj_meta = g_ObjectiveManager.getObjectiveCandidateById(selected_objective_id);
-                pursued_dynamic_objective_this_frame = true; // Mark that we've selected one
-
                 if (obj_meta) {
-                    // Store these for the RL state and general focus, regardless of specific interaction schedule
+                    // Set general bot state related to this dynamic objective focus
                     m_currentObjectiveFocusID = selected_objective_id;
                     m_focusObjectiveLocation = obj_meta->location;
                     m_hasFocusObjectiveLocation = true;
@@ -357,74 +357,155 @@ void RCBotBase::Think()
                          m_previousDistanceToFocusObjective = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
                          m_previousDynamicObjectiveFocusID_debug = m_currentObjectiveFocusID;
                     }
-
-                    ObjectiveInteractionType determined_interaction_type = ObjectiveInteractionType::NONE;
-                    float determined_interaction_duration = 0.0f;
-
-                    switch (obj_meta->category_tag) {
-                        case ObjectiveCategoryType::BUTTON_ENTITY:
-                        case ObjectiveCategoryType::DOOR_ENTITY:
-                            determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
-                            break;
-                        case ObjectiveCategoryType::BOMB_SITE: {
-                            if (g_debug_simulate_bomb_is_planted && m_pEdict && m_pEdict->v.team == 2 /*CT*/) {
-                               determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
-                               determined_interaction_duration = INTERACTION_DEFUSE_TIME_CONST;
-                            } else if (!g_debug_simulate_bomb_is_planted && m_pEdict && m_pEdict->v.team == 1 /*T*/ && m_debug_sim_has_bomb) {
-                               determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
-                               determined_interaction_duration = INTERACTION_PLANT_TIME_CONST;
-                            } else {
-                               determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE; // Default: just reach the site
-                            }
-                            break;
-                        }
-                        case ObjectiveCategoryType::FLAG_STAND:
-                        case ObjectiveCategoryType::FLAG_CAPTURE_POINT:
-                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
-                            break;
-                        case ObjectiveCategoryType::HOSTAGE_ENTITY:
-                            determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
-                            break;
-                        case ObjectiveCategoryType::WEAPON_ITEM:
-                        case ObjectiveCategoryType::AMMO_ITEM:
-                        case ObjectiveCategoryType::HEALTH_ITEM:
-                        case ObjectiveCategoryType::ARMOR_ITEM:
-                        case ObjectiveCategoryType::KEY_ITEM:
-                        case ObjectiveCategoryType::GENERIC_TRIGGER:
-                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
-                            break;
-                        default:
-                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
-                            break;
-                    }
-
-                    m_currentObjectiveInteractionType = determined_interaction_type;
-                    m_objectiveInteractionDuration = determined_interaction_duration;
-                    m_chosenAIActionThisFrame = BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE;
-
-                    // UTIL_ServerPrintf("Bot %s: Obj %s, Cat %s, Interaction %d, Duration %.1f\n",
-                    //    STRING(m_pEdict->v.netname), selected_objective_id.c_str(), objectiveCategoryToString(obj_meta->category_tag).c_str(),
-                    //    static_cast<int>(m_currentObjectiveInteractionType), m_objectiveInteractionDuration);
-
-                    if (m_pSchedule) { // Clear any existing schedule
-                        delete m_pSchedule;
-                        m_pSchedule = nullptr;
-                    }
-
-                    m_pSchedule = new ScheduleExecuteObjectiveInteraction(this, selected_objective_id, m_currentObjectiveInteractionType, m_objectiveInteractionDuration);
-                    if (m_Utils) m_Utils->setUtility(nullptr);
-                    m_bInterrupted = false;  // This is a new, planned schedule, not an interruption of itself.
-
-                } else { // No valid objective metadata found for selected_id
-                    m_currentObjectiveFocusID = "";
-                    m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
-                    pursued_dynamic_objective_this_frame = false; // Reset this flag
-                    // Let bot fall back to other behaviors
+                    // Note: setMoveTo and setLookAt are removed from here. Schedule will handle.
+                    pursued_dynamic_objective_this_frame = true;
+                } else {
+                    // Objective disappeared or became invalid between selection and this check
+                    selected_objective_id = ""; // Clear it so we don't proceed
+                    m_currentObjectiveFocusID = ""; // Clear focus
+                    m_hasFocusObjectiveLocation = false;
+                    pursued_dynamic_objective_this_frame = false;
                 }
             }
         }
     }
-    // --- End Dynamic Objective Selection & Dispatch Logic ---
+    // --- End Dynamic Objective Selection (Part 1) ---
+
+    // --- Determine Interaction Type and Dispatch Schedule (Part 2: Dispatch) ---
+    if (pursued_dynamic_objective_this_frame && !m_currentObjectiveFocusID.empty()) { // m_currentObjectiveFocusID is set if obj_meta was valid
+        ObjectiveCandidateMetadata* obj_meta = g_ObjectiveManager.getObjectiveCandidateById(m_currentObjectiveFocusID); // Re-fetch is safe
+        ObjectiveInteractionType determined_interaction_type = ObjectiveInteractionType::NONE;
+        float determined_interaction_duration = 0.0f;
+
+        if (obj_meta) { // Should generally be true if pursued_dynamic_objective_this_frame is true
+            m_chosenAIActionThisFrame = BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE;
+
+            // Ensure m_pEdict is valid before using it for team checks etc.
+            if (m_pEdict) {
+                switch (obj_meta->category_tag) {
+                    case ObjectiveCategoryType::BUTTON_ENTITY:
+                    case ObjectiveCategoryType::DOOR_ENTITY:
+                        determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
+                        break;
+                    case ObjectiveCategoryType::BOMB_SITE: {
+                        // Use global flags from RCBotManager
+                        if (gRCBotManager.m_debug_g_simulate_bomb_is_planted && m_pEdict->v.team == 2 /*CT*/) {
+                           determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
+                           determined_interaction_duration = RLConsts::INTERACTION_DEFUSE_TIME;
+                        } else if (!gRCBotManager.m_debug_g_simulate_bomb_is_planted && m_pEdict->v.team == 1 /*T*/ && m_debug_sim_has_bomb) { // Bot-specific flag
+                           determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
+                           determined_interaction_duration = RLConsts::INTERACTION_PLANT_TIME;
+                        } else {
+                           // If neither planting nor defusing, but it's a bomb site, could be TOUCH_TO_ACTIVATE (e.g. trigger a voice line or check)
+                           // Or NONE if no specific action without bomb/planted state. Let's assume TOUCH for now.
+                           determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                        }
+                        break;
+                    }
+                    case ObjectiveCategoryType::FLAG_STAND: {
+                        // Logic:
+                        // 1. If it's enemy flag stand AND their flag is loose: TOUCH_TO_ACTIVATE (pick up enemy flag)
+                        // 2. If it's our flag stand AND we are carrying the enemy flag: TOUCH_TO_ACTIVATE (capture/score point)
+                        // 3. If it's our flag stand AND our flag is loose (not at stand) AND we are NOT carrying enemy flag: TOUCH_TO_ACTIVATE (return our flag - simplified)
+                        //    (More complex: returning might be automatic on touch or require holding USE)
+                        bool is_my_flag_stand = (obj_meta->team_ownership == m_pEdict->v.team);
+                        bool is_enemy_flag_stand = (obj_meta->team_ownership != 0 && obj_meta->team_ownership != m_pEdict->v.team);
+
+                        if (is_enemy_flag_stand) {
+                            bool enemy_flag_is_loose = (obj_meta->team_ownership == 1 && gRCBotManager.m_debug_g_simulate_flag_is_loose_team1) ||
+                                                       (obj_meta->team_ownership == 2 && gRCBotManager.m_debug_g_simulate_flag_is_loose_team2);
+                            if (enemy_flag_is_loose && !m_debug_sim_has_enemy_flag) { // If enemy flag is loose AND bot is NOT already carrying a flag
+                                determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE; // Pick up enemy flag
+                            } else {
+                                determined_interaction_type = ObjectiveInteractionType::NONE; // Can't pick up if not loose or if bot already has a flag
+                            }
+                        } else if (is_my_flag_stand) {
+                            if (m_debug_sim_has_enemy_flag && m_debug_sim_enemy_flag_team_id != m_pEdict->v.team) { // Bot is carrying the enemy flag
+                                determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE; // Capture enemy flag at our stand
+                            } else {
+                                // Potentially for returning our flag if it was dropped and now at our stand (game specific)
+                                // For now, if it's our stand and we don't have enemy flag, assume no primary interaction.
+                                // Game logic might automatically return it on touch if it's the actual flag entity at the stand.
+                                determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE; // Or NONE, depending on mod.
+                            }
+                        } else { // Neutral flag stand (if any)
+                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                        }
+                        break;
+                    }
+                    case ObjectiveCategoryType::FLAG_CAPTURE_POINT: { // Usually for CTF flags, not base stands
+                        // This is where you take a flag you are CARRYING to score.
+                        // Assumes this capture point is for the bot's team or a neutral one.
+                        if (m_debug_sim_has_enemy_flag && m_debug_sim_enemy_flag_team_id != 0 && m_debug_sim_enemy_flag_team_id != m_pEdict->v.team) {
+                             // If bot has an ENEMY flag (enemy_flag_team_id is the team of the flag it's carrying)
+                             // And this capture point is for the bot's team (obj_meta->team_ownership == m_pEdict->v.team) or neutral (obj_meta->team_ownership == 0)
+                            if (obj_meta->team_ownership == m_pEdict->v.team || obj_meta->team_ownership == 0) {
+                                determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE; // Capture the flag
+                            } else {
+                                determined_interaction_type = ObjectiveInteractionType::NONE; // Can't capture at enemy's capture point
+                            }
+                        } else {
+                            determined_interaction_type = ObjectiveInteractionType::NONE; // Cannot capture if not carrying an enemy flag
+                        }
+                        break;
+                    }
+                    case ObjectiveCategoryType::HOSTAGE_ENTITY:
+                        determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
+                        determined_interaction_duration = RLConsts::INTERACTION_RESCUE_TIME; // Example duration
+                        break;
+                    case ObjectiveCategoryType::WEAPON_ITEM:
+                    case ObjectiveCategoryType::AMMO_ITEM:
+                    case ObjectiveCategoryType::HEALTH_ITEM:
+                    case ObjectiveCategoryType::ARMOR_ITEM:
+                    case ObjectiveCategoryType::KEY_ITEM:
+                    case ObjectiveCategoryType::GENERIC_TRIGGER:
+                        determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                        break;
+                    default:
+                        determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                        break;
+                }
+            } else { // m_pEdict is NULL, should not happen if bot is alive and thinking
+                determined_interaction_type = ObjectiveInteractionType::NONE;
+            }
+
+            m_currentObjectiveInteractionType = determined_interaction_type;
+            m_objectiveInteractionDuration = determined_interaction_duration;
+
+            UTIL_ServerPrintf("Bot %s: Focused Obj: %s, Category: %s -> Determined Interaction: %d, Duration: %.1f\n", (m_pEdict ? STRING(m_pEdict->v.netname) : "NO_EDICT"), m_currentObjectiveFocusID.c_str(), objectiveCategoryToString(obj_meta->category_tag).c_str(), static_cast<int>(m_currentObjectiveInteractionType), m_objectiveInteractionDuration);
+
+            // UTIL_ServerPrintf("Bot %s: Obj %s, Cat %s. Interaction Type: %d, Duration: %.1f\n",
+            //    (m_pEdict ? STRING(m_pEdict->v.netname) : "UNKNOWN_BOT"),
+            //    m_currentObjectiveFocusID.c_str(),
+            //    objectiveCategoryToString(obj_meta->category_tag).c_str(),
+            //    static_cast<int>(m_currentObjectiveInteractionType),
+            //    m_objectiveInteractionDuration);
+
+            if (m_pSchedule) {
+                delete m_pSchedule;
+                m_pSchedule = nullptr;
+            }
+
+            // Only create a new schedule if a valid interaction type was determined
+            if (m_currentObjectiveInteractionType != ObjectiveInteractionType::NONE) {
+                m_pSchedule = new ScheduleExecuteObjectiveInteraction(this, m_currentObjectiveFocusID, m_currentObjectiveInteractionType, m_objectiveInteractionDuration);
+                if (m_Utils) m_Utils->setUtility(nullptr);
+                m_bInterrupted = false;
+            } else {
+                // If no specific interaction, don't create the interaction schedule.
+                // Bot might still move towards the objective due to general utility/pathing if it's on the way.
+                // Or clear focus if no interaction means it's not currently pursuable.
+                // For now, we'll let it potentially path, but schedule won't do anything.
+                // Consider clearing m_currentObjectiveFocusID here if NONE means it's truly un-actionable.
+            }
+
+        } else {
+            m_currentObjectiveFocusID = "";
+            m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
+            m_hasFocusObjectiveLocation = false; // Added to ensure focus is fully cleared
+        }
+    }
+    // --- End Determine Interaction Type and Dispatch Schedule ---
 
     // --- Distance-Based Shaping Reward for Focused Objective (Dynamic or Intrinsic if location is set) ---
     // Ensure there's some focus ID (dynamic or intrinsic string) if hasFocusObjectiveLocation is true

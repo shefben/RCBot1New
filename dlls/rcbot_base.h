@@ -226,6 +226,8 @@ private:
     ObjectiveInteractionType m_currentObjectiveInteractionType;
     float m_objectiveInteractionDuration; // For timed interactions like USE_FOR_DURATION
     bool m_debug_sim_has_bomb; // Debug flag for simulating if bot has the bomb
+    bool m_debug_sim_has_enemy_flag;       // Debug flag for CTF: bot carries enemy flag
+    int  m_debug_sim_enemy_flag_team_id; // Debug flag for CTF: which team's flag bot carries (e.g. 1 or 2)
 
 	// Curiosity and Novelty Detection
 	float m_curiosityScore;
