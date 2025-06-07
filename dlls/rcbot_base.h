@@ -220,6 +220,7 @@ private:
     EHandle m_pLastEnemy;    // Last enemy targeted, for damage dealt calculation
     float m_lastEnemyHealth; // Health of the last enemy, for damage dealt calculation
     RCBotRLHelper m_rlHelper; // RL Helper instance
+    std::string m_previousDynamicObjectiveFocusID_debug; // For tracking changes in dynamic objective focus for shaping rewards
 
 	// Curiosity and Novelty Detection
 	float m_curiosityScore;

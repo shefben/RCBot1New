@@ -60,6 +60,7 @@ enum class BotActionType : int {
     SWITCH_WEAPON_PRIMARY, // Example, could be more granular
     SWITCH_WEAPON_SECONDARY,
     SWITCH_WEAPON_MELEE,
+    TACTIC_PURSUE_DYNAMIC_OBJECTIVE, // New action type
     MAX_ACTIONS // For sizing arrays or loops
 };
 

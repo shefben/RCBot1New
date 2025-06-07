@@ -30,6 +30,14 @@
 #include <functional>
 #include <limits>
 #include <cmath>
+#include <cfloat> // For FLT_MAX, though std::numeric_limits is preferred if available
+
+// Constants for Dynamic Objective Selection
+static const float MIN_CONFIDENCE_FOR_DYNAMIC_OBJECTIVE = 0.3f;
+static const float DISTANCE_PENALTY_FACTOR_DYN_OBJ = 0.0005f;
+static const uint8_t DYNAMIC_OBJECTIVE_MOVE_PRIORITY = 3;
+// Note: <cfloat> or <limits> should be included for FLT_MAX or std::numeric_limits
+
 
 RCBotBase ::RCBotBase()
 {
@@ -134,6 +142,7 @@ void RCBotBase::spawnInit()
 
     m_pLastEnemy.Set(nullptr);
     m_lastEnemyHealth = 0.0f;
+    m_previousDynamicObjectiveFocusID_debug = "";
 }
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
@@ -290,6 +299,62 @@ void RCBotBase::Think()
 	m_pVisibles->tasks(m_pProfile->getVisRevs()); // This might change m_pEnemy (e.g. newVisible, lostVisible)
     // m_chosenAIActionThisFrame should be set by the above AI logic based on current state.
 
+    // --- Dynamic Objective Selection Logic ---
+    bool pursued_dynamic_objective_this_frame = false;
+    if (isAlive() && m_pEdict) { // Only select dynamic objectives if alive
+        const auto& candidates = g_ObjectiveManager.getObjectiveCandidates();
+        if (!candidates.empty()) {
+            float best_score = -std::numeric_limits<float>::max(); // Use std::numeric_limits
+            std::string selected_objective_id = "";
+            Vector selected_objective_location;
+
+            for (const auto& pair : candidates) {
+                const ObjectiveCandidateMetadata& obj = pair.second;
+
+                if (!obj.is_active || obj.confidence < MIN_CONFIDENCE_FOR_DYNAMIC_OBJECTIVE) {
+                    continue;
+                }
+
+                float distance_to_objective = (obj.location - m_pEdict->v.origin).Length();
+                float score = obj.confidence - (distance_to_objective * DISTANCE_PENALTY_FACTOR_DYN_OBJ);
+
+                // Optional: Add bonus for categories bot might prefer based on its role/state
+                // if (obj.category_tag == ObjectiveCategoryType::WEAPON_ITEM && needs_weapon()) score += 0.1f;
+
+                if (score > best_score) {
+                    best_score = score;
+                    selected_objective_id = obj.unique_id;
+                    selected_objective_location = obj.location;
+                }
+            }
+
+            if (!selected_objective_id.empty()) {
+                m_currentObjectiveFocusID = selected_objective_id;
+                m_chosenAIActionThisFrame = BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE;
+
+                setMoveTo(selected_objective_location, DYNAMIC_OBJECTIVE_MOVE_PRIORITY);
+                setLookAt(selected_objective_location, DYNAMIC_OBJECTIVE_MOVE_PRIORITY);
+
+                if (m_currentObjectiveFocusID != m_previousDynamicObjectiveFocusID_debug) {
+                     m_focusObjectiveLocation = selected_objective_location;
+                     m_hasFocusObjectiveLocation = true;
+                     m_previousDistanceToFocusObjective = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
+                     m_previousDynamicObjectiveFocusID_debug = m_currentObjectiveFocusID;
+                }
+                pursued_dynamic_objective_this_frame = true;
+                // UTIL_ServerPrintf("Bot %s pursuing dynamic objective %s (Score: %.2f)\n", STRING(m_pEdict->v.netname), selected_objective_id.c_str(), best_score);
+
+                // If we've chosen a dynamic objective, and there's an existing schedule,
+                // interrupt to allow the utility system to potentially pick a more relevant task,
+                // or to let direct movement take over if no task is chosen.
+                if (m_pSchedule != nullptr) {
+                    m_bInterrupted = true;
+                }
+            }
+        }
+    }
+    // --- End Dynamic Objective Selection Logic ---
+
 	// Handle Damage Dealt Reward - AFTER m_pEnemy is determined for this frame.
 	edict_t* currentEnemyEdict = m_pEnemy.Get();
 	if (currentEnemyEdict && currentEnemyEdict->v.health > 0 && isEnemy(currentEnemyEdict) )
@@ -361,6 +426,11 @@ void RCBotBase::Think()
 	
 	if ( m_pSchedule == nullptr || m_bInterrupted )
 	{
+        // TODO: getBestUtility and subsequent schedule execution should ideally be aware of
+        // m_chosenAIActionThisFrame == BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE
+        // and use m_currentObjectiveFocusID to select/parameterize tasks that directly support
+        // pursuing the dynamic objective (e.g., a specific 'PathToDynamicObjective' schedule).
+        // For now, interrupting ensures that if no utility aligns, direct movement commands take precedence.
 		RCBotUtility *pUtil = m_Utils->getBestUtility(this);
 
 		m_bInterrupted = false;
