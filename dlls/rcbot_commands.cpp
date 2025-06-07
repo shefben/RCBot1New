@@ -219,7 +219,7 @@ RCBotCommandReturn RCBotCommand_ShowObjectives::execute(edict_t* pClient, const 
     std::string classname_filter_str = (arg2 && *arg2) ? arg2 : "";
 
     const auto& objectives = g_ObjectiveManager.getObjectiveCandidates();
-    char buf[512]; // Buffer for each line to print
+    char buf[1024]; // Increased buffer size for additional category field
 
     snprintf(buf, sizeof(buf)-1, "--- Dynamic Objectives (%zu total, Filter: %s, Class: %s) ---\n",
         objectives.size(), filter_type_str.c_str(), classname_filter_str.empty() ? "any" : classname_filter_str.c_str());
@@ -237,10 +237,12 @@ RCBotCommandReturn RCBotCommand_ShowObjectives::execute(edict_t* pClient, const 
         }
 
         count_shown++;
-        snprintf(buf, sizeof(buf)-1, "ID: %s\n  Cls: %s, Loc: (%.0f,%.0f,%.0f), Team: %d\n"
+        snprintf(buf, sizeof(buf)-1, "ID: %s\n  Cls: %s, Cat: %s, Loc: (%.0f,%.0f,%.0f), Team: %d\n"
                                      "  Conf: %.2f, Clst: %d, Act: %s, Seen: %d, Pos: %d, Neg: %d\n"
                                      "  FirstTS: %.1f, LastTS: %.1f\n",
-                 obj.unique_id.c_str(), obj.entity_classname.c_str(),
+                 obj.unique_id.c_str(),
+                 obj.entity_classname.c_str(),
+                 objectiveCategoryToString(obj.category_tag).c_str(), // Added category
                  obj.location.x, obj.location.y, obj.location.z,
                  obj.team_ownership, obj.confidence, obj.cluster_id,
                  obj.is_active ? "Y" : "N", obj.times_seen_or_touched,

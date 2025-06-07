@@ -390,6 +390,10 @@ void RCBotManager::LevelInit()
     if (g_ObjectiveManager.getObjectiveCandidates().size() > 0) { // Only cluster if there's something to cluster
         g_ObjectiveManager.clusterObjectives(5); // Example: 5 clusters
     }
+
+    // After discovery and clustering, infer categories for all candidates
+    g_ObjectiveManager.inferObjectiveCategories();
+    // UTIL_ServerPrintf("RCBotManager: Objective category inference triggered after LevelInit discovery.\n");
 }
 
 

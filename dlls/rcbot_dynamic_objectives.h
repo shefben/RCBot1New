@@ -12,6 +12,50 @@
 // Forward declaration
 class DynamicObjectiveManager;
 
+enum class ObjectiveCategoryType {
+    UNKNOWN = 0,
+    BOMB_SITE,          // CS: Plant bomb area
+    RESCUE_ZONE,        // CS: Hostage rescue area
+    HOSTAGE_ENTITY,     // CS: Individual hostage entity
+    FLAG_STAND,         // CTF: Enemy flag's home location / our flag if returned
+    FLAG_CAPTURE_POINT, // CTF: Location to bring enemy flag to score
+    CONTROL_POINT,      // DoD/TFC: Area to capture/control
+    WEAPON_ITEM,        // Specific weapon pickup
+    AMMO_ITEM,          // Specific ammo pickup
+    HEALTH_ITEM,        // Specific health pickup
+    ARMOR_ITEM,         // Specific armor pickup
+    KEY_ITEM,           // Generic important item/pickup for a map
+    NAV_EXPLORE_POINT,  // Bot-generated exploration goal (less of a world objective)
+    GENERIC_TRIGGER,    // Game-specific trigger with unknown function initially
+    BUTTON_ENTITY,      // A pressable button
+    DOOR_ENTITY,        // A door that might be an objective to open/pass
+    OBJECTIVE_ITEM_HELD // e.g. bot is carrying the flag/bomb
+    // Add more as common patterns are identified
+};
+
+inline std::string objectiveCategoryToString(ObjectiveCategoryType category) {
+    switch (category) {
+        case ObjectiveCategoryType::UNKNOWN: return "Unknown";
+        case ObjectiveCategoryType::BOMB_SITE: return "BombSite";
+        case ObjectiveCategoryType::RESCUE_ZONE: return "RescueZone";
+        case ObjectiveCategoryType::HOSTAGE_ENTITY: return "HostageEntity";
+        case ObjectiveCategoryType::FLAG_STAND: return "FlagStand";
+        case ObjectiveCategoryType::FLAG_CAPTURE_POINT: return "FlagCapture";
+        case ObjectiveCategoryType::CONTROL_POINT: return "ControlPoint";
+        case ObjectiveCategoryType::WEAPON_ITEM: return "WeaponItem";
+        case ObjectiveCategoryType::AMMO_ITEM: return "AmmoItem";
+        case ObjectiveCategoryType::HEALTH_ITEM: return "HealthItem";
+        case ObjectiveCategoryType::ARMOR_ITEM: return "ArmorItem";
+        case ObjectiveCategoryType::KEY_ITEM: return "KeyItem";
+        case ObjectiveCategoryType::NAV_EXPLORE_POINT: return "NavExplore";
+        case ObjectiveCategoryType::GENERIC_TRIGGER: return "GenericTrigger";
+        case ObjectiveCategoryType::BUTTON_ENTITY: return "Button";
+        case ObjectiveCategoryType::DOOR_ENTITY: return "Door";
+        case ObjectiveCategoryType::OBJECTIVE_ITEM_HELD: return "HeldObjectiveItem";
+        default: return "CategoryUndefined";
+    }
+}
+
 struct ObjectiveCandidateMetadata {
     std::string entity_classname; // Classname of the entity, if applicable
     Vector location;              // World location (e.g., pEntity->v.origin, or a specific point)
@@ -28,13 +72,14 @@ struct ObjectiveCandidateMetadata {
     float last_seen_timestamp;
     bool  is_active;              // Still present in the map / relevant for current game phase
     int   cluster_id;             // ID of the cluster this objective belongs to
+    ObjectiveCategoryType category_tag; // Category of the objective
 
     ObjectiveCandidateMetadata() :
         team_ownership(0), confidence(0.1f),
         times_interacted_positive_outcome(0), times_interacted_negative_outcome(0),
         times_seen_or_touched(0),
         first_seen_timestamp(0.0f), last_seen_timestamp(0.0f), is_active(true),
-        cluster_id(-1) { // Initialize to -1 (unclustered)
+        cluster_id(-1), category_tag(ObjectiveCategoryType::UNKNOWN) { // Initialize to -1 (unclustered)
         // location will be zero-initialized by Vector's default constructor
     }
 };
@@ -84,6 +129,9 @@ public:
                        const std::string& next_objective_id, // If empty, implies terminal or next state value is explicit_next_objective_value
                        float explicit_next_objective_value = 0.0f,
                        bool is_terminal_transition = false);
+
+    // Infers and sets the category_tag for all current objective candidates
+    void inferObjectiveCategories();
 
 private:
     std::map<std::string, ObjectiveCandidateMetadata> m_objective_candidates;

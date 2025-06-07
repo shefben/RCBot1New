@@ -10,6 +10,23 @@
 // Define the global instance
 DynamicObjectiveManager g_ObjectiveManager;
 
+// Helper to safely get CVAR string
+std::string getCvarString(const char* cvar_name) {
+    if (g_engfuncs.pfnCVarGetString) { // Check if function pointer is valid
+        char* val = (*g_engfuncs.pfnCVarGetString)((char*)cvar_name);
+        if (val) return std::string(val);
+    }
+    return ""; // Return empty if cvar not found or function pointer invalid
+}
+
+// Helper to safely get CVAR float
+float getCvarFloat(const char* cvar_name) {
+    if (g_engfuncs.pfnCVarGetFloat) { // Check if function pointer is valid
+        return (*g_engfuncs.pfnCVarGetFloat)((char*)cvar_name);
+    }
+    return 0.0f; // Return 0.0f if cvar not found or function pointer invalid
+}
+
 // Static list of classnames considered interesting for automatic discovery
 static const std::set<std::string> s_interestingObjectiveClassnames = {
     "func_bomb_target", "info_bomb_target",         // CS Bomb Target
@@ -576,4 +593,78 @@ void DynamicObjectiveManager::applyTDUpdate(const std::string& objective_id,
     //                   objective_id.c_str(), v_s, immediate_reward, v_s_prime, current_obj_meta->confidence,
     //                   is_terminal_transition, next_objective_id.empty() ? "N/A" : next_objective_id.c_str());
     // UTIL_ServerPrintf(buffer); // Or your preferred logging mechanism
+}
+
+void DynamicObjectiveManager::inferObjectiveCategories() {
+    if (!gpGlobals || !g_engfuncs.pfnCVarGetString || !g_engfuncs.pfnCVarGetFloat) {
+        // UTIL_ServerPrintf("DOM_ERROR: Cannot infer categories, missing engine functions or globals.\n");
+        return;
+    }
+
+    // UTIL_ServerPrintf("DOM: Inferring objective categories...\n");
+    // std::string game_type = getCvarString("mp_gametype"); // Example, not used for now
+
+    // int cstrike_objectives_found = 0; // Example for specific logic path
+
+    for (auto& pair : m_objective_candidates) {
+        ObjectiveCandidateMetadata& objective = pair.second;
+        objective.category_tag = ObjectiveCategoryType::UNKNOWN; // Default before inference
+
+        // --- Counter-Strike Specific Logic ---
+        if (objective.entity_classname == "func_bomb_target" || objective.entity_classname == "info_bomb_target") {
+            objective.category_tag = ObjectiveCategoryType::BOMB_SITE;
+            // cstrike_objectives_found++;
+            continue;
+        } else if (objective.entity_classname == "hostage_entity" || objective.entity_classname == "monster_hostage") {
+            objective.category_tag = ObjectiveCategoryType::HOSTAGE_ENTITY;
+            // cstrike_objectives_found++;
+            continue;
+        } else if (objective.entity_classname == "info_hostage_rescue" || objective.entity_classname == "func_hostage_rescue") {
+            objective.category_tag = ObjectiveCategoryType::RESCUE_ZONE;
+            // cstrike_objectives_found++;
+            continue;
+        }
+
+        // --- Team Fortress Classic Specific Logic (Example) ---
+        if (objective.entity_classname == "item_tfgoal") {
+            // This is highly simplified; real TFC logic would be more complex based on goal type, team etc.
+            // For example, item_tfgoal might have a "goal_type" or "mdl" field.
+            // Assuming a generic CTF-like setup for demonstration.
+            if (objective.team_ownership != 0) { // If it has a team, assume it's a flag stand for that team.
+                 objective.category_tag = ObjectiveCategoryType::FLAG_STAND;
+            } else { // Otherwise, could be a capture point if neutral or based on other map specific logic.
+                 objective.category_tag = ObjectiveCategoryType::FLAG_CAPTURE_POINT;
+            }
+            continue;
+        }
+        if (objective.entity_classname.rfind("info_control_point", 0) == 0 || objective.entity_classname.rfind("trigger_capture_point",0) == 0) {
+             objective.category_tag = ObjectiveCategoryType::CONTROL_POINT;
+             continue;
+        }
+
+        // --- Generic Item Categorization (Lower Priority) ---
+        if (objective.entity_classname.rfind("weapon_", 0) == 0 || objective.entity_classname == "weaponbox" || objective.entity_classname == "armoury_entity") {
+            objective.category_tag = ObjectiveCategoryType::WEAPON_ITEM;
+        } else if (objective.entity_classname.rfind("ammo_", 0) == 0 || objective.entity_classname == "item_ammobox") {
+            objective.category_tag = ObjectiveCategoryType::AMMO_ITEM;
+        } else if (objective.entity_classname.rfind("item_health", 0) == 0 || objective.entity_classname == "item_healthkit") {
+            objective.category_tag = ObjectiveCategoryType::HEALTH_ITEM;
+        } else if (objective.entity_classname.rfind("item_armor", 0) == 0 || objective.entity_classname == "item_battery") {
+            objective.category_tag = ObjectiveCategoryType::ARMOR_ITEM;
+        } else if (objective.entity_classname == "func_button" || objective.entity_classname.rfind("momentary_rot_button",0) == 0) {
+            objective.category_tag = ObjectiveCategoryType::BUTTON_ENTITY;
+        } else if (objective.entity_classname == "func_door" || objective.entity_classname == "func_door_rotating") {
+            objective.category_tag = ObjectiveCategoryType::DOOR_ENTITY;
+        } else if (objective.entity_classname.rfind("trigger_", 0) == 0) {
+            objective.category_tag = ObjectiveCategoryType::GENERIC_TRIGGER;
+        }
+        // If still UNKNOWN, it remains so.
+
+        // if (objective.category_tag != ObjectiveCategoryType::UNKNOWN) {
+        //     UTIL_ServerPrintf("DOM: Objective %s (%s) categorized as %s\n",
+        //         objective.unique_id.c_str(), objective.entity_classname.c_str(),
+        //         objectiveCategoryToString(objective.category_tag).c_str());
+        // }
+    }
+    // UTIL_ServerPrintf("DOM: Objective category inference complete. CS Objectives found: %d\n", cstrike_objectives_found);
 }
