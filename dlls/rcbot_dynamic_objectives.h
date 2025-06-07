@@ -78,6 +78,13 @@ public:
     // Checks if a classname is part of the globally interesting set
     bool isClassnameGloballyInteresting(const std::string& classname) const;
 
+    // Applies a Temporal Difference update to an objective's confidence (value)
+    void applyTDUpdate(const std::string& objective_id,
+                       float immediate_reward,
+                       const std::string& next_objective_id, // If empty, implies terminal or next state value is explicit_next_objective_value
+                       float explicit_next_objective_value = 0.0f,
+                       bool is_terminal_transition = false);
+
 private:
     std::map<std::string, ObjectiveCandidateMetadata> m_objective_candidates;
     std::string m_currentMapName;

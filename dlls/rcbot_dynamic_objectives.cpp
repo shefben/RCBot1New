@@ -35,6 +35,10 @@ static const float OBJECTIVE_MIN_CONFIDENCE_FOR_ACTIVE = 0.1f; // Confidence bel
 static const float OBJECTIVE_PRUNE_CONFIDENCE_THRESHOLD = 0.02f; // Confidence below which an inactive objective is a candidate for pruning
 static const float OBJECTIVE_TIME_UNSEEN_FOR_PRUNING = 300.0f;  // Seconds: Markedly longer than time for just deactivation
 
+// TD Learning Parameters for Dynamic Objectives
+static const float OBJECTIVE_TD_LEARNING_RATE_ALPHA = 0.1f;
+static const float OBJECTIVE_TD_DISCOUNT_FACTOR_GAMMA = 0.9f;
+
 
 DynamicObjectiveManager::DynamicObjectiveManager() {
     if (gpGlobals) { // gpGlobals might be null if manager is constructed very early
@@ -182,7 +186,25 @@ void DynamicObjectiveManager::recordObjectiveInteractionOutcome(const std::strin
     // Placeholder stub
     // UTIL_ServerPrintf("DOM: recordObjectiveInteractionOutcome for ID %s, outcome: %s\n",
     //    objective_id.c_str(), positive_outcome ? "positive" : "negative");
-    // Logic for this will be in Phase 2 (6.2)
+
+    auto it = m_objective_candidates.find(objective_id);
+    if (it == m_objective_candidates.end()) {
+        // UTIL_ServerPrintf("DOM_ERROR: Outcome recorded for unknown objective ID: %s\n", objective_id.c_str());
+        return;
+    }
+
+    ObjectiveCandidateMetadata& data = it->second;
+    if (positive_outcome) {
+        data.times_interacted_positive_outcome++;
+    } else {
+        data.times_interacted_negative_outcome++;
+    }
+
+    // UTIL_ServerPrintf("DOM: Objective %s interaction outcome: %s. (Pos: %d, Neg: %d)\n",
+    //                   objective_id.c_str(), positive_outcome ? "POSITIVE" : "NEGATIVE",
+    //                   data.times_interacted_positive_outcome, data.times_interacted_negative_outcome);
+
+    // Confidence is NO LONGER updated here. It's handled by applyTDUpdate.
 }
 
 void DynamicObjectiveManager::updateObjectiveConfidence(const std::string& objective_id, float change) {
@@ -505,4 +527,53 @@ void DynamicObjectiveManager::clusterObjectives(int k_num_clusters) {
 
 bool DynamicObjectiveManager::isClassnameGloballyInteresting(const std::string& classname) const {
     return s_interestingObjectiveClassnames.count(classname) > 0;
+}
+
+void DynamicObjectiveManager::applyTDUpdate(const std::string& objective_id,
+                                           float immediate_reward,
+                                           const std::string& next_objective_id,
+                                           float explicit_next_objective_value,
+                                           bool is_terminal_transition) {
+    ObjectiveCandidateMetadata* current_obj_meta = getObjectiveCandidateById(objective_id);
+    if (!current_obj_meta) {
+        // UTIL_ServerPrintf("DOM_TD_ERROR: Current objective '%s' not found for TD update.\n", objective_id.c_str());
+        return;
+    }
+
+    float v_s = current_obj_meta->confidence; // Current value V(s)
+    float v_s_prime = 0.0f;                   // Value of next state V(s')
+
+    if (is_terminal_transition) {
+        v_s_prime = explicit_next_objective_value;
+        // For example, if round ends, explicit_next_objective_value might be 0 (if reward captured everything)
+        // or a fixed value representing the game's end state if not incorporated in immediate_reward.
+    } else if (!next_objective_id.empty()) {
+        ObjectiveCandidateMetadata* next_obj_meta = getObjectiveCandidateById(next_objective_id);
+        if (next_obj_meta) {
+            v_s_prime = next_obj_meta->confidence; // V(s') from the next known objective
+        } else {
+            // UTIL_ServerPrintf("DOM_TD_WARNING: Next objective '%s' not found. Using explicit_next_objective_value (%.2f) for V(s').\n",
+            //                   next_objective_id.c_str(), explicit_next_objective_value);
+            v_s_prime = explicit_next_objective_value; // Fallback if next_objective_id is given but not found
+        }
+    } else {
+        // No next_objective_id provided, and not explicitly terminal, so use explicit_next_objective_value.
+        // This case might represent transitions where the next distinct 'objective state' isn't clear,
+        // so we rely on the caller to provide an estimated value for what follows.
+        v_s_prime = explicit_next_objective_value;
+    }
+
+    // TD Update: V(s) = V(s) + alpha * (reward + gamma * V(s') - V(s))
+    float new_value = v_s + OBJECTIVE_TD_LEARNING_RATE_ALPHA *
+                          (immediate_reward + OBJECTIVE_TD_DISCOUNT_FACTOR_GAMMA * v_s_prime - v_s);
+
+    // Clamp new_value. Let's use a range like [-1.0, 1.0] as objectives can be good or bad.
+    current_obj_meta->confidence = std::max(-1.0f, std::min(1.0f, new_value));
+
+    // Optional: Log the update for debugging
+    // char buffer[256];
+    // snprintf(buffer, sizeof(buffer), "DOM_TD_UPDATE: Obj '%s', V(s_old)=%.3f, R=%.2f, V(s_prime)=%.3f -> V(s_new)=%.3f (is_term=%d, next_id=%s)\n",
+    //                   objective_id.c_str(), v_s, immediate_reward, v_s_prime, current_obj_meta->confidence,
+    //                   is_terminal_transition, next_objective_id.empty() ? "N/A" : next_objective_id.c_str());
+    // UTIL_ServerPrintf(buffer); // Or your preferred logging mechanism
 }

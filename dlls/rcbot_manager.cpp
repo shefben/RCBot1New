@@ -11,9 +11,14 @@
 #include "rcbot_dynamic_objectives.h" // For g_ObjectiveManager
 
 // Constants for ProcessPlayerDeathEvent
-static const float OBJECTIVE_CONF_PENALTY_ON_DEATH_WHILE_PURSUING = -0.1f;
-static const float OBJECTIVE_CONF_BONUS_ON_KILL_NEAR_OBJECTIVE = 0.05f;
+static const float OBJECTIVE_CONF_PENALTY_ON_DEATH_WHILE_PURSUING = -0.1f; // Retained for potential direct use, though TD is primary
+static const float OBJECTIVE_CONF_BONUS_ON_KILL_NEAR_OBJECTIVE = 0.05f;  // Retained for potential direct use
 static const float OBJECTIVE_PROXIMITY_FOR_RELEVANCE = 300.0f; // Units for "near objective"
+
+// Constants for round end rewards related to TD learning for objectives
+static const float REWARD_VALUE_ROUND_WIN = 1.0f;
+static const float PENALTY_VALUE_ROUND_LOSS = -1.0f;
+static const float REWARD_VALUE_ROUND_DRAW = 0.0f;
 
 /// <summary>
 /// 
@@ -138,50 +143,55 @@ void RCBotManager::Think()
 }
 
 void RCBotManager::OnRoundEnd_Simulated(int winning_team_id) {
-    UTIL_ServerPrintf("RCBotManager: Simulated Round End. Winning Team ID: %d\n", winning_team_id);
+    // UTIL_ServerPrintf("RCBotManager: Simulated Round End. Winning Team: %d\n", winning_team_id);
     const auto& active_bots = getActiveBots();
 
     for (RCBotBase* bot : active_bots) {
-        if (!bot || !bot->getEdict() || bot->m_currentObjectiveFocusID.empty()) { // Accessing public member for now as per subtask plan
+        if (!bot || !bot->getEdict() || bot->m_currentObjectiveFocusID.empty()) {
             continue;
         }
 
         ObjectiveCandidateMetadata* objective_data = g_ObjectiveManager.getObjectiveCandidateById(bot->m_currentObjectiveFocusID);
-        if (objective_data) {
-            bool bot_team_won_round = (bot->getEdict()->v.team == winning_team_id && winning_team_id != 0);
-            bool positive_outcome_for_objective = false;
+        // Ensure objective is still valid and active before applying update
+        if (objective_data && objective_data->is_active) {
+            float round_outcome_reward = REWARD_VALUE_ROUND_DRAW;
+            bool bot_team_won_this_round = false; // For recordObjectiveInteractionOutcome
 
-            // Determine if the objective itself was "achieved" based on team win.
-            // This is a simplification. A real system would check objective-specific completion.
-            if (objective_data->team_ownership == 0) { // Neutral objective (e.g., press a button)
-                // If bot was focused on it, and its team won, consider it a positive interaction for now.
-                // Or, if it's a general objective, any win might be positive.
-                // This needs more game-specific logic. For now, let's assume neutral objectives
-                // are positive if the bot's team wins the round while it was focused.
-                positive_outcome_for_objective = bot_team_won_round;
-            } else if (objective_data->team_ownership == bot->getEdict()->v.team) {
-                // Bot was focused on an objective belonging to its own team.
-                // If bot's team won, it's a positive outcome for pursuing/defending this objective.
-                positive_outcome_for_objective = bot_team_won_round;
-            } else {
-                // Bot was focused on an objective belonging to the enemy team (e.g., attacking it).
-                // If bot's team won, it's a positive outcome (they successfully overcame/captured it).
-                positive_outcome_for_objective = bot_team_won_round;
+            if (winning_team_id != 0) { // If not a draw (0 often means draw or no winner)
+                bot_team_won_this_round = (bot->getEdict()->v.team == winning_team_id);
+                round_outcome_reward = bot_team_won_this_round ? REWARD_VALUE_ROUND_WIN : PENALTY_VALUE_ROUND_LOSS;
             }
 
-            UTIL_ServerPrintf("Bot %s (Team %d) was focused on objective %s (Team %d). Outcome recorded: %s\n",
-                STRING(bot->getEdict()->v.netname), bot->getEdict()->v.team,
-                bot->m_currentObjectiveFocusID.c_str(), objective_data->team_ownership,
-                positive_outcome_for_objective ? "POSITIVE" : "NEGATIVE");
+            // This is a terminal transition for the objective pursuit within this round.
+            // The value of the terminal state V(s') is 0 because the outcome is fully captured in 'round_outcome_reward'.
+            g_ObjectiveManager.applyTDUpdate(
+                bot->m_currentObjectiveFocusID,
+                round_outcome_reward,
+                "",    // No next_objective_id for a terminal round event
+                0.0f,  // explicit_next_objective_value for terminal state is 0
+                true   // is_terminal_transition = true
+            );
 
-            g_ObjectiveManager.recordObjectiveInteractionOutcome(bot->m_currentObjectiveFocusID, positive_outcome_for_objective);
+            // Still call recordObjectiveInteractionOutcome to update interaction counters,
+            // but it no longer directly modifies confidence.
+            if (winning_team_id != 0) { // Only record win/loss if there was a winner
+                 g_ObjectiveManager.recordObjectiveInteractionOutcome(bot->m_currentObjectiveFocusID, bot_team_won_this_round);
+            }
+
+            // UTIL_ServerPrintf("RCBotManager: Bot %s (Team %d) focused on %s. Round outcome reward: %.2f. TD update applied.\n",
+            //     STRING(bot->getEdict()->v.netname), bot->getEdict()->v.team,
+            //     bot->m_currentObjectiveFocusID.c_str(), round_outcome_reward);
         }
-        // Bot should clear its specific focus ID after round end.
-        // The general m_currentFocusObjective (string description) might persist or be re-evaluated.
-        // bot->m_currentObjectiveFocusID = ""; // This should be done in RCBotBase when it processes round end for itself
+
+        // It's debatable whether to clear m_currentObjectiveFocusID here.
+        // If objectives persist across rounds, the bot might continue.
+        // If focus should reset, then: bot->m_currentObjectiveFocusID = "";
+        // This is better handled in RCBotBase itself if it needs to react to round end.
     }
 
-    g_ObjectiveManager.clearObjectivesOnNewRound(); // Reset round-specific stats for all objectives
+    // This call resets per-round stats for objectives, like interaction counts,
+    // and marks them as active for re-evaluation in the new round.
+    g_ObjectiveManager.clearObjectivesOnNewRound();
 }
 
 
