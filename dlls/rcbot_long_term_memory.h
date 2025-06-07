@@ -38,20 +38,32 @@ public:
     void archiveEpisode(const Episode& episode);
 
     // Retrieves episodes based on query parameters from the database
-    std::vector<Episode> retrieveEpisodes(const std::string& mapName, const std::string& gametypeFilter = "");
+    std::vector<Episode> retrieveEpisodes(const std::string& mapName, const std::string& gametypeFilter = ""); // Keep or deprecate?
+
+    // New query methods
+    std::vector<Episode> retrieveEpisodesByOutcome(
+        const std::string& mapName,
+        const std::string& outcomeFilter,
+        int limit = 10);
+
+    std::vector<Episode> retrieveEpisodesWithEventType(
+        const std::string& mapName, // Can be empty to search all maps
+        int eventTypeFilter,       // GameEventType enum cast to int
+        int limit = 10);
 
     // (File-based helpers loadEpisodeFromFile, saveEpisodeToFile, generateEpisodeFilename will be removed or commented out in .cpp)
 
 private:
     sqlite3* m_db; // SQLite database connection
-    // std::string episodeStoragePath; // No longer needed for primary storage if using DB
-    // std::vector<Episode> loadedEpisodes; // Cache might still be useful, but not part of this DB setup step
 
     // Helper to execute simple SQL statements (CREATE, INSERT, UPDATE, DELETE without results)
     bool executeSQL(const std::string& sql_statement);
 
     // Helper to set up database schema (create tables)
     void initializeDatabase();
+
+    // Helper to reconstruct a full Episode (metadata + events) given its ID
+    Episode fetchFullEpisodeById(long long episode_id);
 };
 
 #endif // RCBOT_LONG_TERM_MEMORY_H

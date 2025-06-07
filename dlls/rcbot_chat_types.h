@@ -2,6 +2,8 @@
 #define RCBOT_CHAT_TYPES_H
 
 #include <string>
+#include <vector> // Needed for std::vector
+#include <map>    // Needed for std::map
 #include "extdll.h" // For gpGlobals if used for timestamp, or just time_t
 
 // Defines the personality of the bot, influencing chat style and behavior
@@ -47,5 +49,24 @@ struct TaggedChatMessage {
                       float num_score = 0.0f)
         : message(msg), sentiment(s), persona_at_time_of_sending(p), timestamp(ts), sentiment_score(num_score) {}
 };
+
+
+// Map from BotPersona to a simple style vector
+// These are manually defined placeholders for actual learned embeddings
+// Dimensions could represent [aggression, support, playfulness] for example.
+inline std::map<BotPersona, std::vector<float>>& getPersonaStyleEmbeddings() {
+    static std::map<BotPersona, std::vector<float>> personaStyleEmbeddings = {
+        {BotPersona::PERSONA_NEUTRAL,        {0.5f, 0.5f, 0.3f}},
+        {BotPersona::PERSONA_AGGRESSIVE,     {0.9f, 0.1f, 0.2f}},
+        {BotPersona::PERSONA_PLAYFUL,        {0.3f, 0.4f, 0.9f}},
+        {BotPersona::PERSONA_SUPPORTIVE,     {0.1f, 0.9f, 0.4f}},
+        {BotPersona::PERSONA_TRASH_TALKER,   {0.8f, 0.1f, 0.8f}}, // High aggression, high playfulness
+        {BotPersona::PERSONA_TACTICAL,       {0.4f, 0.7f, 0.1f}}  // Neutral aggression, moderate support, low playfulness
+    };
+    // Ensure all personas defined in the enum have an entry
+    // This static map is initialized once.
+    return personaStyleEmbeddings;
+}
+
 
 #endif // RCBOT_CHAT_TYPES_H

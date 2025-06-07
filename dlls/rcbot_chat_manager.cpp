@@ -62,7 +62,11 @@ std::string RCBotChatManager::getSeedFromContext(RCBotChatHistory* chat_history,
         }
     }
     // Could also add words from context_trigger if seed is still short or empty
-    // e.g., if (seed.length() < 5 && !context_trigger.empty()) seed += " " + context_trigger;
+    if (seed.empty() && !context_trigger.empty()) {
+        // Simple use of context_trigger; could be more elaborate
+        std::vector<std::string> trigger_tokens = m_ngramModel.tokenize(context_trigger);
+        if(!trigger_tokens.empty()) seed = trigger_tokens.back(); // last word of trigger
+    }
     return seed;
 }
 
@@ -73,68 +77,95 @@ TaggedChatMessage RCBotChatManager::generateBotChat(RCBotBase* bot, const std::s
     }
 
     if (!m_modelsInitialized) {
-         // This should ideally not happen if initializeChatModels is called correctly at startup/level init.
-        UTIL_ServerPrintf("Error: N-gram model not initialized for RCBotChatManager!\n");
-        // Fallback to very basic message
-        return TaggedChatMessage("System error.", SENTIMENT_NEGATIVE, PERSONA_NEUTRAL, gpGlobals->time);
+        UTIL_ServerPrintf("Error: N-gram model not initialized for RCBotChatManager! Call initializeChatModels.\n");
+        return TaggedChatMessage("System error: chat model offline.", SENTIMENT_NEGATIVE, PERSONA_NEUTRAL, gpGlobals->time);
     }
+
+    BotPersona current_persona = bot->getPersona();
+    const auto& embeddings_map = getPersonaStyleEmbeddings(); // from rcbot_chat_types.h
+    std::vector<float> style_vector;
+    auto it_style = embeddings_map.find(current_persona);
+    if (it_style != embeddings_map.end()) {
+        style_vector = it_style->second;
+    } else {
+        style_vector = embeddings_map.at(BotPersona::PERSONA_NEUTRAL); // Fallback
+    }
+
+    // Debug print for persona and style vector
+    char style_vec_str[128] = {0};
+    std::string temp_s;
+    for(float val : style_vector) temp_s += std::to_string(val) + " ";
+    snprintf(style_vec_str, sizeof(style_vec_str)-1, "%s", temp_s.c_str());
+
+    // Reduced debug printing from previous step, focus on style vector
+    // UTIL_ServerPrintf("RCBotChatManager: Bot %s (Persona %d, Style: [%s]) Trigger: %s\n",
+    //     STRING(bot->getEdict()->v.netname), (int)current_persona, style_vec_str, context_trigger.c_str());
+
 
     std::string seed_phrase = getSeedFromContext(chat_history, context_trigger);
-    std::string generated_text = m_ngramModel.generateSentence(seed_phrase, 10); // Max 10 words
 
-    BotPersona persona = bot->getPersona();
+    // Conceptual: Influence seed phrase based on style_vector if seed_phrase is still weak
+    if (seed_phrase.empty() || seed_phrase.length() < 3) { // If context seed is too short or absent
+        if (!style_vector.empty()) {
+            // Example: style_vector[0] = aggression, style_vector[1] = support, style_vector[2] = playfulness
+            if (style_vector[0] > 0.7f) seed_phrase = "enemy"; // Aggressive seed
+            else if (style_vector[1] > 0.7f) seed_phrase = "team";  // Supportive seed
+            else if (style_vector.size() > 2 && style_vector[2] > 0.7f) seed_phrase = "fun"; // Playful seed
+        }
+    }
+    // UTIL_ServerPrintf("RCBotChatManager: Bot %s using seed_phrase: '%s'\n", STRING(bot->getEdict()->v.netname), seed_phrase.c_str());
+
+
+    std::string generated_text = m_ngramModel.generateSentence(seed_phrase, 10);
+
     float currentTime = gpGlobals->time;
-    ChatSentiment determined_sentiment = SENTIMENT_NEUTRAL; // Default
+    ChatSentiment determined_sentiment = SENTIMENT_NEUTRAL;
 
-    // Basic sentiment determination based on context_trigger
-    if (context_trigger == "on_kill") determined_sentiment = SENTIMENT_POSITIVE; // Or TAUNT for aggressive
+    // Basic sentiment determination based on context_trigger (can be refined)
+    if (context_trigger == "on_kill") determined_sentiment = (current_persona == PERSONA_TRASH_TALKER || current_persona == PERSONA_AGGRESSIVE) ? SENTIMENT_TAUNT : SENTIMENT_POSITIVE;
     else if (context_trigger == "on_death") determined_sentiment = SENTIMENT_NEGATIVE;
     else if (context_trigger == "enemy_spotted") determined_sentiment = SENTIMENT_INFO;
+    else if (context_trigger == "request_help") determined_sentiment = SENTIMENT_QUESTION; // or command if bot is asking for help
 
-    if (generated_text.empty() || generated_text.length() < 5) { // Fallback if N-gram fails or produces too short text
-        // UTIL_ServerPrintf("N-gram generation fallback for bot %s (seed: '%s')\n", STRING(bot->getEdict()->v.netname), seed_phrase.c_str());
+    if (generated_text.length() < 5 && generated_text.find_first_not_of(' ') != std::string::npos) { // If generated text is too short but not purely whitespace
+         // Try to extend it slightly with a generic follow-up based on persona
+        if (current_persona == PERSONA_PLAYFUL || current_persona == PERSONA_TRASH_TALKER) generated_text += " lol";
+        else if (current_persona == PERSONA_SUPPORTIVE) generated_text += " right?";
+    }
+
+
+    if (generated_text.empty() || generated_text.length() < 5 || generated_text.find_first_not_of(' ') == std::string::npos ) {
+        // UTIL_ServerPrintf("N-gram generation fallback for bot %s (Persona: %d, Seed: '%s', Trigger: '%s')\n",
+        //    STRING(bot->getEdict()->v.netname), (int)current_persona, seed_phrase.c_str(), context_trigger.c_str());
+
         // Fallback to simple persona-based hardcoded messages
-    // A real implementation would be far more complex, using context_trigger, game state, etc.
+        if (context_trigger == "on_kill") {
+             switch (current_persona) {
+                case PERSONA_AGGRESSIVE:    generated_text = "Too easy."; determined_sentiment = SENTIMENT_TAUNT; break;
+                case PERSONA_TRASH_TALKER:  generated_text = "Get owned!"; determined_sentiment = SENTIMENT_TAUNT; break;
+                case PERSONA_PLAYFUL:       generated_text = "Woohoo!"; determined_sentiment = SENTIMENT_POSITIVE; break;
+                default:                    generated_text = "Target down."; determined_sentiment = SENTIMENT_INFO; break;
+            }
+        } else if (context_trigger == "generic_event" || context_trigger.empty()){
+             switch (current_persona) {
+                case PERSONA_AGGRESSIVE:    generated_text = "Grrr."; determined_sentiment = SENTIMENT_NEUTRAL; break;
+                case PERSONA_PLAYFUL:       generated_text = "Hi!"; determined_sentiment = SENTIMENT_GREETING; break;
+                case PERSONA_SUPPORTIVE:    generated_text = "Team, let's focus."; determined_sentiment = SENTIMENT_COMMAND; break;
+                case PERSONA_TRASH_TALKER:  generated_text = "What now?"; determined_sentiment = SENTIMENT_QUESTION; break;
+                case PERSONA_TACTICAL:      generated_text = "Acknowledged."; determined_sentiment = SENTIMENT_INFO; break;
+                default:                    generated_text = "Ok."; determined_sentiment = SENTIMENT_NEUTRAL; break;
+            }
+        } else { // Default fallback for other unknown/unhandled triggers
+            generated_text = "...";
+            determined_sentiment = SENTIMENT_NEUTRAL;
+        }
+        return TaggedChatMessage(generated_text, determined_sentiment, current_persona, currentTime, 0.0f); // sentiment_score 0 for hardcoded
+    }
 
-    // Example: A generic response if context_trigger is "generic_event"
-    if (context_trigger == "generic_event") {
-        switch (persona) {
-            case PERSONA_AGGRESSIVE:
-                return TaggedChatMessage("Get out of my way!", SENTIMENT_TAUNT, persona, currentTime);
-            case PERSONA_PLAYFUL:
-                return TaggedChatMessage("Whee! This is fun!", SENTIMENT_POSITIVE, persona, currentTime);
-            case PERSONA_SUPPORTIVE:
-                return TaggedChatMessage("We can do this, team!", SENTIMENT_POSITIVE, persona, currentTime);
-            case PERSONA_TRASH_TALKER:
-                return TaggedChatMessage("You call that a move? Pathetic!", SENTIMENT_TAUNT, persona, currentTime);
-            case PERSONA_TACTICAL:
-                return TaggedChatMessage("Hold your positions.", SENTIMENT_COMMAND, persona, currentTime);
-            case PERSONA_NEUTRAL:
-            default:
-                return TaggedChatMessage("Okay.", SENTIMENT_NEUTRAL, persona, currentTime);
-        }
-    }
-    // Example: Response to a kill event
-    else if (context_trigger == "on_kill") {
-         switch (persona) {
-            case PERSONA_AGGRESSIVE:
-                return TaggedChatMessage("Another one bites the dust!", SENTIMENT_TAUNT, persona, currentTime);
-            case PERSONA_PLAYFUL:
-                return TaggedChatMessage("Booyah! Got 'em!", SENTIMENT_POSITIVE, persona, currentTime);
-            case PERSONA_SUPPORTIVE:
-                // Supportive might not say much on a personal kill, or praise self mildly
-                return TaggedChatMessage("Target neutralized.", SENTIMENT_INFO, persona, currentTime);
-            case PERSONA_TRASH_TALKER:
-                return TaggedChatMessage("Sit down, scrub!", SENTIMENT_TAUNT, persona, currentTime);
-            case PERSONA_TACTICAL:
-                return TaggedChatMessage("Hostile down. Area potentially clear.", SENTIMENT_INFO, persona, currentTime);
-            case PERSONA_NEUTRAL:
-            default:
-                return TaggedChatMessage("Target eliminated.", SENTIMENT_NEUTRAL, persona, currentTime);
-        }
-    }
-    // Default fallback for unknown contexts
-    return TaggedChatMessage("...", SENTIMENT_NEUTRAL, persona, currentTime);
+    // If N-gram produced something, use it.
+    // The sentiment_score for N-gram generated text is not analyzed here; could be done as a post-step.
+    // For now, it inherits determined_sentiment from context_trigger or remains neutral.
+    return TaggedChatMessage(generated_text, determined_sentiment, current_persona, currentTime, 0.0f);
 }
 
 void RCBotChatManager::recordPlayerChat(edict_t* pPlayerEdict, const std::string& messageText) {

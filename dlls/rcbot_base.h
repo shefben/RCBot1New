@@ -13,6 +13,7 @@
 #include "rcbot_chat_types.h"   // For BotPersona
 #include "rcbot_chat_manager.h" // For g_ChatManager
 #include "rcbot_chat_history.h" // For RCBotChatHistory
+#include "rl_types.h"           // For BotState, BotActionType, RLTransition
 #include <deque>                // For std::deque
 
 class RCBotProfile;
@@ -202,8 +203,15 @@ private:
 
 	float m_fSpeedPercent;
 
-	RCBotShortTermMemory m_shortTermMemory; // bot short term memory
+	RCBotReplayBuffer m_replayBuffer;      // Changed from RCBotShortTermMemory
 	RCBotLongTermMemory* m_pLongTermMemory; // Pointer to the LTM system
+
+	// RL State and Action Tracking
+	BotState m_currentState;
+	BotState m_previousState;
+	BotActionType m_lastAction;
+	float m_accumulatedRewardSinceLastTransition;
+	bool m_firstThinkCycle; // To handle initial state
 
 	// Curiosity and Novelty Detection
 	float m_curiosityScore;
@@ -285,6 +293,23 @@ public:
 	static const float PERCEPTION_DECAY_RATE = 0.995f; // Per Think cycle, towards baseline
 	static const float PERCEPTION_BASELINE = 0.5f;    // Neutral baseline for perception decay
 
+public:
+	// Non-Visual Entity Interaction Novelty
+	void processEntityInteractionNovelty(edict_t* pEntity, const std::string& interaction_type);
+
+private: // Helper methods for RL
+    BotState getCurrentBotState() const;
+    BotActionType determineBotAction() const; // Determines action taken that led to current state
+    void calculateReward(); // Calculates reward based on game events & updates accumulator
+
+    // Non-Visual Entity Interaction Novelty Helpers
+    std::vector<float> extractEntityFeatures(edict_t* pEntity, const std::string& interaction_type) const;
+    std::deque<std::vector<float>> m_seenEntityFeaturesLog;
+
+public: // Constants for Entity Interaction Novelty
+    static const size_t MAX_SEEN_FEATURES_LOG_SIZE = 200;
+    static const float ENTITY_FEATURE_NOVELTY_THRESHOLD = 0.7f; // Min Euclidean distance to be "novel"
+    static const float ENTITY_NOVELTY_REWARD_MULTIPLIER = 0.2f;
 
 private: // Make persona private and expose via getter/setter
 	BotPersona m_persona;

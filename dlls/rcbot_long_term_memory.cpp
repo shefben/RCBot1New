@@ -2,6 +2,7 @@
 #include "extdll.h" // For gpGlobals if needed
 #include "util.h"   // For UTIL_LogPrintf / UTIL_ServerPrintf or other logging
 #include <stdio.h>  // For fprintf, snprintf for SQLite errors
+#include <sstream>  // For std::stringstream used in deserialization
 
 // Constructor: Opens the database and initializes the schema.
 RCBotLongTermMemory::RCBotLongTermMemory() : m_db(nullptr) {
@@ -276,6 +277,181 @@ std::vector<Episode> RCBotLongTermMemory::retrieveEpisodes(const std::string& ma
     // UTIL_ServerPrintf("RCBotLTM: Retrieved %d episodes for map %s.\n", retrieved_episodes.size(), mapNameFilter.c_str());
     return retrieved_episodes;
 }
+
+
+Episode RCBotLongTermMemory::fetchFullEpisodeById(long long episode_id) {
+    Episode full_episode;
+    if (!m_db) {
+        fprintf(stderr, "RCBotLTM Error: Database not open in fetchFullEpisodeById.\n");
+        return full_episode; // Return empty episode
+    }
+
+    sqlite3_stmt* episode_stmt = nullptr;
+    const char* episode_sql = "SELECT map_name, gametype_cvar, mod_flags, timestamp, outcome FROM Episodes WHERE episode_id = ?;";
+
+    int rc = sqlite3_prepare_v2(m_db, episode_sql, -1, &episode_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error preparing episode select by ID: %s\n", sqlite3_errmsg(m_db));
+        return full_episode;
+    }
+    sqlite3_bind_int64(episode_stmt, 1, episode_id);
+
+    if (sqlite3_step(episode_stmt) == SQLITE_ROW) {
+        full_episode.metadata.mapName = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 0));
+
+        const char* gameCvars_cstr = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 1));
+        if (gameCvars_cstr) {
+            std::string gameCvars_str(gameCvars_cstr);
+            std::stringstream ss_cvars(gameCvars_str);
+            std::string pair_str;
+            while(std::getline(ss_cvars, pair_str, ';')) {
+                size_t eq_pos = pair_str.find('=');
+                if (eq_pos != std::string::npos) {
+                    full_episode.metadata.gameCvars[pair_str.substr(0, eq_pos)] = pair_str.substr(eq_pos + 1);
+                }
+            }
+        }
+
+        const char* modFlags_cstr = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 2));
+        if (modFlags_cstr) {
+            std::string modFlags_str(modFlags_cstr);
+            std::stringstream ss_flags(modFlags_str);
+            std::string flag;
+            while(std::getline(ss_flags, flag, ';')) {
+                if(!flag.empty()) full_episode.metadata.modFlags.push_back(flag);
+            }
+        }
+        full_episode.metadata.timestamp = static_cast<long>(sqlite3_column_double(episode_stmt, 3));
+        const char* outcome_cstr = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 4));
+        full_episode.metadata.outcome = outcome_cstr ? outcome_cstr : "";
+
+        // Fetch associated GameEvents
+        sqlite3_stmt* event_stmt = nullptr;
+        const char* event_sql = "SELECT timestamp, event_type, damage_amount, attacker_info, target_info FROM GameEvents WHERE episode_id = ? ORDER BY timestamp ASC;";
+        rc = sqlite3_prepare_v2(m_db, event_sql, -1, &event_stmt, nullptr);
+        if (rc == SQLITE_OK) {
+            sqlite3_bind_int64(event_stmt, 1, episode_id);
+            while (sqlite3_step(event_stmt) == SQLITE_ROW) {
+                GameEvent current_event;
+                current_event.timestamp = static_cast<float>(sqlite3_column_double(event_stmt, 0));
+                current_event.type = static_cast<GameEventType>(sqlite3_column_int(event_stmt, 1));
+                current_event.damageAmount = static_cast<float>(sqlite3_column_double(event_stmt, 2));
+                const char* attacker_cstr = reinterpret_cast<const char*>(sqlite3_column_text(event_stmt, 3));
+                current_event.attacker_info_str = attacker_cstr ? attacker_cstr : "";
+                const char* target_cstr = reinterpret_cast<const char*>(sqlite3_column_text(event_stmt, 4));
+                current_event.target_info_str = target_cstr ? target_cstr : "";
+                full_episode.events.push_back(current_event);
+            }
+            sqlite3_finalize(event_stmt);
+        } else {
+            fprintf(stderr, "RCBotLTM SQL error preparing event select for episode %lld (in helper): %s\n", episode_id, sqlite3_errmsg(m_db));
+        }
+    } else {
+         fprintf(stderr, "RCBotLTM Error: Episode ID %lld not found.\n", episode_id);
+    }
+    sqlite3_finalize(episode_stmt);
+    return full_episode;
+}
+
+
+std::vector<Episode> RCBotLongTermMemory::retrieveEpisodesByOutcome(
+    const std::string& mapName,
+    const std::string& outcomeFilter,
+    int limit) {
+
+    std::vector<Episode> retrieved_episodes;
+    if (!m_db) {
+        fprintf(stderr, "RCBotLTM Error: Database not open.\n");
+        return retrieved_episodes;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    std::string sql = "SELECT episode_id FROM Episodes WHERE 1=1"; // Start with a tautology
+    std::vector<std::string> params_text;
+    std::vector<int> params_int; // Not used here, but for consistency if adding int params
+
+    int param_idx = 1;
+
+    if (!mapName.empty()) {
+        sql += " AND map_name = ?";
+        params_text.push_back(mapName);
+    }
+    if (!outcomeFilter.empty()) {
+        sql += " AND outcome = ?";
+        params_text.push_back(outcomeFilter);
+    }
+    sql += " ORDER BY timestamp DESC LIMIT ?;";
+
+    int rc = sqlite3_prepare_v2(m_db, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error preparing retrieveEpisodesByOutcome: %s\n", sqlite3_errmsg(m_db));
+        return retrieved_episodes;
+    }
+
+    for(const auto& txt_param : params_text) {
+        sqlite3_bind_text(stmt, param_idx++, txt_param.c_str(), -1, SQLITE_STATIC);
+    }
+    sqlite3_bind_int(stmt, param_idx++, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        long long episode_id = sqlite3_column_int64(stmt, 0);
+        retrieved_episodes.push_back(fetchFullEpisodeById(episode_id));
+    }
+    sqlite3_finalize(stmt);
+    return retrieved_episodes;
+}
+
+std::vector<Episode> RCBotLongTermMemory::retrieveEpisodesWithEventType(
+    const std::string& mapName,
+    int eventTypeFilter,
+    int limit) {
+
+    std::vector<Episode> retrieved_episodes;
+    if (!m_db) {
+        fprintf(stderr, "RCBotLTM Error: Database not open.\n");
+        return retrieved_episodes;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    std::string sql =
+        "SELECT DISTINCT E.episode_id FROM Episodes E "
+        "JOIN GameEvents GE ON E.episode_id = GE.episode_id "
+        "WHERE GE.event_type = ?";
+
+    std::vector<std::string> params_text;
+    int param_idx = 1;
+
+    // sqlite3_bind_int(stmt, param_idx++, eventTypeFilter); // Binding must be done AFTER prepare
+
+    if (!mapName.empty()) {
+        sql += " AND E.map_name = ?";
+        params_text.push_back(mapName);
+    }
+    sql += " ORDER BY E.timestamp DESC LIMIT ?;";
+
+    int rc = sqlite3_prepare_v2(m_db, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error preparing retrieveEpisodesWithEventType: %s (SQL: %s)\n", sqlite3_errmsg(m_db), sql.c_str());
+        return retrieved_episodes;
+    }
+
+    // Reset param_idx for binding
+    param_idx = 1;
+    sqlite3_bind_int(stmt, param_idx++, eventTypeFilter);
+
+    for(const auto& txt_param : params_text) {
+        sqlite3_bind_text(stmt, param_idx++, txt_param.c_str(), -1, SQLITE_STATIC);
+    }
+    sqlite3_bind_int(stmt, param_idx++, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        long long episode_id = sqlite3_column_int64(stmt, 0);
+        retrieved_episodes.push_back(fetchFullEpisodeById(episode_id));
+    }
+    sqlite3_finalize(stmt);
+    return retrieved_episodes;
+}
+
 
 /*
 // Old file-based methods - to be removed or fully commented.

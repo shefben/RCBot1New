@@ -16,6 +16,9 @@
 #include <math.h>
 #include <string> // Required for std::string manipulation in Think
 #include <random> // For random chat chance
+#include <functional> // For std::hash
+#include <limits>     // For std::numeric_limits
+#include <cmath>      // For std::sqrt, std::pow
 
 RCBotBase ::RCBotBase()
 {
@@ -45,6 +48,13 @@ RCBotBase ::RCBotBase()
 	m_perceivedPlayerAggression = 0.5f; // Initialize perception
 	m_perceivedPlayerCooperation = 0.5f; // Initialize perception
 	m_lastInteractingPlayerEdict.Set(nullptr); // Initialize EHandle
+
+    // RL specific initializations
+    m_accumulatedRewardSinceLastTransition = 0.0f;
+    m_firstThinkCycle = true;
+    m_lastAction = BotActionType::IDLE;
+    // m_currentState and m_previousState will be default constructed
+    // m_seenEntityFeaturesLog is default constructed
 
 	Init();
 	loadMacroActions(); // Load predefined macro actions
@@ -81,6 +91,15 @@ void RCBotBase::spawnInit()
 	m_previousDistanceToFocusObjective = -1.0f; // Also reset objective focus distance
 	m_hasFocusObjectiveLocation = false;
     m_shapingRewardAccumulator = 0.0f;
+
+    // RL specific resets
+    m_accumulatedRewardSinceLastTransition = 0.0f;
+    m_firstThinkCycle = true;
+    m_currentState.clear();
+    m_previousState.clear();
+    m_lastAction = BotActionType::IDLE;
+    m_replayBuffer.clear(); // Clear replay buffer on spawn
+    m_seenEntityFeaturesLog.clear(); // Clear seen entity features log
 }
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
@@ -92,6 +111,31 @@ void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
 
 void RCBotBase::Think()
 {
+    // --- RL Transition Recording - Start of Frame ---
+    m_currentState = getCurrentBotState();
+
+    if (!m_firstThinkCycle && !m_previousState.isEmpty()) { // Ensure previousState has been populated
+        // At this point, m_accumulatedRewardSinceLastTransition should contain rewards
+        // from the actions taken *after* m_lastAction was decided in the previous frame,
+        // leading up to m_currentState.
+        // calculateReward(); // Call this if rewards are not updated by events directly
+
+        RLTransition transition;
+        transition.state = m_previousState;
+        transition.action = m_lastAction; // Action that led from previousState to currentState
+        transition.reward = m_accumulatedRewardSinceLastTransition;
+        transition.next_state = m_currentState;
+        transition.is_terminal = !isAlive();
+
+        m_replayBuffer.addTransition(transition);
+
+        m_accumulatedRewardSinceLastTransition = 0.0f; // Reset reward for the new cycle
+    }
+    m_previousState = m_currentState;
+    m_firstThinkCycle = false;
+    // --- End RL Transition Recording - Start of Frame ---
+
+
     // Handle Macro Action execution first if one is active
     if (m_currentMacroAction != nullptr) {
         if (!isAlive()) { // Stop macro if bot dies
@@ -100,16 +144,9 @@ void RCBotBase::Think()
             // SERVER_PRINT("RCBot %s: Macro '%s' finished.\n", STRING(m_pEdict->v.netname), m_currentMacroAction->m_name.c_str());
             stopCurrentMacroAction();
         } else {
-            // Clear buttons before macro update, so macro steps have direct control for this frame
             m_pEdict->v.button = 0;
-            // Note: m_vMoveTo and m_vLookAt are reset at the start of the regular Think().
-            // If a macro needs to set these, it will. If it doesn't, they remain reset.
-            // The macro's update might also directly manipulate pev->v_angle or buttons.
-
             m_currentMacroAction->update(this, gpGlobals->frametime);
-
-            // If macro is meant to fully control bot for its duration, we return here.
-            // This means subsequent Think() logic (curiosity, objectives, schedule) is skipped.
+            m_lastAction = determineBotAction(); // Determine action after macro update
             return;
         }
     }
@@ -360,6 +397,17 @@ void RCBotBase::Think()
 	// }
 	// --- End Objective Interest System ---
 
+    // --- Entity Interaction Novelty (Bump) ---
+    if (m_pEdict && !FNullEnt(m_pEdict->v.touch)) {
+        edict_t* pTouchedEntity = m_pEdict->v.touch;
+        if (pTouchedEntity != m_pEdict && pTouchedEntity->v.solid != SOLID_BSP) { // Don't process for world or self
+            processEntityInteractionNovelty(pTouchedEntity, "bumped_into");
+        }
+        // Clear touch after processing, though engine might do this.
+        // pev->touch = nullptr;
+    }
+
+
 	// --- Player Perception Decay ---
 	m_perceivedPlayerAggression = m_perceivedPlayerAggression * PERCEPTION_DECAY_RATE + PERCEPTION_BASELINE * (1.0f - PERCEPTION_DECAY_RATE);
 	m_perceivedPlayerCooperation = m_perceivedPlayerCooperation * PERCEPTION_DECAY_RATE + PERCEPTION_BASELINE * (1.0f - PERCEPTION_DECAY_RATE);
@@ -569,6 +617,61 @@ void RCBotBase::recordGameEvent(const GameEvent& event) {
     // Apply filtering here if only certain game events are relevant for chat context
     ContextualItem contextItem(event);
     m_chatContextMemory.addItem(contextItem);
+
+    // --- RL Reward Calculation from Game Events ---
+    // This is a basic example. More sophisticated reward logic would be needed.
+    if (event.type == GameEventType::DAMAGE_EVENT) {
+        // This interpretation depends on how GameEvents for damage are created and what they signify.
+        // Let's assume if damageAmount > 0, it's damage *taken* by this bot,
+        // and attacker_info_str holds the attacker's classname or name.
+        if (event.damageAmount > 0 && m_pEdict) { // Bot took damage
+            m_accumulatedRewardSinceLastTransition -= event.damageAmount * 0.02f; // Penalty for taking damage
+
+            // Try to find the attacker edict based on attacker_info_str
+            // This is a simplification; a direct edict_t* would be better if available when event is created.
+            edict_t* pAttacker = nullptr;
+            if (!event.attacker_info_str.empty() && event.attacker_info_str != "world") {
+                 // Try to find player by name (if attacker_info_str is a name)
+                 // This is a very basic lookup, might not always work or be efficient.
+                for (int i = 1; i <= gpGlobals->maxClients; i++) {
+                    edict_t* pPlayer = INDEXENT(i);
+                    if (pPlayer && !pPlayer->free && STRING(pPlayer->v.netname) && event.attacker_info_str == STRING(pPlayer->v.netname)) {
+                        pAttacker = pPlayer;
+                        break;
+                    }
+                }
+                // If not found as player, could check other entities by classname, but that's more complex.
+                // For now, if pAttacker is found:
+                if (pAttacker && pAttacker != m_pEdict) {
+                     processEntityInteractionNovelty(pAttacker, "damaged_me");
+                } else if (!pAttacker && event.attacker_info_str != "nullptr" && !event.attacker_info_str.empty()) {
+                    // Could attempt to find non-player entity by classname if that's what attacker_info_str is
+                    // For now, if not a known player, we can't easily get an edict_t* from just a classname string here.
+                    // One could also pass the edict_t* of the attacker to recordGameEvent if available at source.
+                }
+            }
+        }
+        // Conceptual: if (event.damageDealtToOther > 0) { // Bot dealt damage
+        //    m_accumulatedRewardSinceLastTransition += event.damageDealtToOther * 0.01f;
+        //    if (target_edict) processEntityInteractionNovelty(target_edict, "damaged_other");
+        // }
+
+    } else if (event.type == GameEventType::HEAR_SOUND_EVENT) {
+        // Assuming target_info_str might hold the entity classname that made the sound,
+        // and attacker_info_str could be its name or index if parsable.
+        // This is very speculative without knowing how HEAR_SOUND_EVENT is populated.
+        // If we can get an edict_t* for the sound source:
+        // edict_t* pSoundSource = ... get from event ...
+        // if (pSoundSource && pSoundSource != m_pEdict) {
+        //    processEntityInteractionNovelty(pSoundSource, "heard_sound_from");
+        // }
+    }
+    // else if (event.type == GameEventType::KILL_EVENT_BY_BOT) {
+    //    m_accumulatedRewardSinceLastTransition += 1.0f;
+    // }
+    // else if (event.type == GameEventType::DEATH_EVENT_OF_BOT) {
+    //    m_accumulatedRewardSinceLastTransition -= 1.0f;
+    // }
 }
 
 // Example of where to call recordGameEvent:
@@ -950,3 +1053,151 @@ void RCBotBase::updatePerceptionFromPlayerChat(edict_t* pPlayerEdict, float chat
         m_perceivedPlayerAggression,
         m_perceivedPlayerCooperation);
 }
+
+// --- RL Related Helper Implementations ---
+
+BotState RCBotBase::getCurrentBotState() const {
+    BotState current_s;
+    if (!m_pEdict) return current_s; // Should not happen if bot is active
+
+    current_s.addFeature(m_pEdict->v.health / 100.0f); // Normalize
+    current_s.addFeature(m_pEdict->v.armorvalue / 100.0f); // Normalize
+
+    // Normalize origin and velocity? Depends on map size & max speed. For now, raw.
+    // Consider relative positions if learning general behaviors.
+    current_s.addFeature(m_pEdict->v.origin.x);
+    current_s.addFeature(m_pEdict->v.origin.y);
+    current_s.addFeature(m_pEdict->v.origin.z);
+    current_s.addFeature(m_pEdict->v.velocity.x);
+    current_s.addFeature(m_pEdict->v.velocity.y);
+    current_s.addFeature(m_pEdict->v.velocity.z);
+
+    current_s.addFeature(m_pEnemy.Get() != nullptr && FVisible(m_pEnemy.Get()) ? 1.0f : 0.0f);
+    current_s.addFeature(m_pCurrentWeapon ? static_cast<float>(m_pCurrentWeapon->m_iId) / 30.0f : 0.0f); // Normalize weapon ID (approx max 30)
+    current_s.addFeature(m_pCurrentWeapon ? static_cast<float>(m_pCurrentWeapon->m_iClip) / 50.0f : 0.0f); // Normalize clip (approx max 50, varies wildly)
+
+    current_s.addFeature(m_pEdict->v.button & IN_DUCK ? 1.0f : 0.0f);
+    current_s.addFeature(isUnderWater() ? 1.0f : 0.0f);
+    current_s.addFeature(m_pEdict->v.flags & FL_ONGROUND ? 1.0f : 0.0f);
+
+    return current_s;
+}
+
+BotActionType RCBotBase::determineBotAction() const {
+    if (!m_pEdict) return BotActionType::IDLE;
+    if (m_currentMacroAction != nullptr) {
+        // A more granular mapping from macro name to BotActionType could be done here
+        // For now, just one type for "any macro"
+        if (m_currentMacroAction->m_name == "strafe_jump_left") return BotActionType::USE_MACRO_ACTION_STRAFE_JUMP_LEFT;
+        if (m_currentMacroAction->m_name == "peek_cover_right_quick") return BotActionType::USE_MACRO_ACTION_PEEK_COVER_RIGHT;
+        // Fallback for other macros, or add more specific enum entries
+        return BotActionType::USE_MACRO_ACTION_STRAFE_JUMP_LEFT;
+    }
+
+    if (m_pEdict->v.button & IN_ATTACK) return BotActionType::PRIMARY_ATTACK;
+    if (m_pEdict->v.button & IN_ATTACK2) return BotActionType::SECONDARY_ATTACK;
+    if (m_pEdict->v.button & IN_RELOAD) return BotActionType::RELOAD;
+    if (m_pEdict->v.button & IN_JUMP) return BotActionType::JUMP;
+    if (m_pEdict->v.button & IN_DUCK) return BotActionType::DUCK; // Changed to DUCK from state
+    if (m_pEdict->v.button & IN_USE) return BotActionType::USE_ITEM;
+
+    // Prioritize movement: if multiple movement buttons, pick one or a combined action type
+    if (m_pEdict->v.button & IN_FORWARD) return BotActionType::MOVE_FORWARD;
+    if (m_pEdict->v.button & IN_BACK) return BotActionType::MOVE_BACKWARD;
+    if (m_pEdict->v.button & IN_MOVELEFT) return BotActionType::MOVE_LEFT;
+    if (m_pEdict->v.button & IN_MOVERIGHT) return BotActionType::MOVE_RIGHT;
+
+    return BotActionType::IDLE;
+}
+
+void RCBotBase::calculateReward() {
+    // This is largely a placeholder as rewards are event-driven or state-change driven.
+    // Some intrinsic rewards (like curiosity or objective progress) are already added elsewhere.
+    // This function could be used for more complex, holistic reward calculation at the end of a frame.
+}
+
+
+// --- Non-Visual Entity Interaction Novelty ---
+
+std::vector<float> RCBotBase::extractEntityFeatures(edict_t* pEntity, const std::string& interaction_type) const {
+    std::vector<float> features;
+    if (!pEntity || !m_pEdict) return features;
+
+    // 1. Classname hash (normalized)
+    std::hash<std::string> str_hash;
+    float class_hash = static_cast<float>(str_hash(STRING(pEntity->v.classname)));
+    // Normalize: Assuming hash values can be large, this is a very rough normalization.
+    // A better way might be to map known classnames to IDs and then normalize the ID.
+    features.push_back(static_cast<float>(fmod(class_hash, 1000.0) / 1000.0));
+
+    // 2. Health (normalized 0-1, or -1 if not applicable/unknown)
+    features.push_back(pEntity->v.health > 0 ? pEntity->v.health / 100.0f : -1.0f);
+
+    // 3. Is moving?
+    features.push_back(pEntity->v.velocity.LengthSquared() > 25.0f ? 1.0f : 0.0f); // Threshold for "moving" (5 units/sec)
+
+    // 4. Distance at interaction (normalized)
+    float dist = (pEntity->v.origin - m_pEdict->v.origin).Length();
+    const float MAX_INTERACTION_DIST = 1024.0f; // Example typical max engagement distance
+    features.push_back(std::min(dist, MAX_INTERACTION_DIST) / MAX_INTERACTION_DIST);
+
+    // 5. Interaction type (normalized)
+    float interaction_val = 0.0f;
+    if (interaction_type == "damaged_me") interaction_val = 0.1f;
+    else if (interaction_type == "bumped_into") interaction_val = 0.2f;
+    else if (interaction_type == "heard_sound_from") interaction_val = 0.3f;
+    // ... other types ...
+    else interaction_val = 0.9f; // "other"
+    features.push_back(interaction_val);
+
+    // Example: Add current speed of the bot as a feature of context
+    // features.push_back(m_pEdict->v.velocity.Length() / 320.0f ); // Max speed approx 320
+
+    return features;
+}
+
+void RCBotBase::processEntityInteractionNovelty(edict_t* pEntity, const std::string& interaction_type) {
+    if (!pEntity || FNullEnt(pEntity) || pEntity == m_pEdict) return; // Don't process for self or null
+
+    std::vector<float> features = extractEntityFeatures(pEntity, interaction_type);
+    if (features.empty()) return;
+
+    float min_distance_sq = std::numeric_limits<float>::max();
+    bool log_was_empty = m_seenEntityFeaturesLog.empty();
+
+    if (!log_was_empty) {
+        for (const auto& logged_features : m_seenEntityFeaturesLog) {
+            if (logged_features.size() != features.size()) continue; // Should not happen if features are consistent
+            float current_distance_sq = 0.0f;
+            for (size_t i = 0; i < features.size(); ++i) {
+                current_distance_sq += std::pow(features[i] - logged_features[i], 2);
+            }
+            min_distance_sq = std::min(min_distance_sq, current_distance_sq);
+        }
+    }
+
+    float novelty_score = 0.0f;
+    float actual_distance = (log_was_empty || min_distance_sq == std::numeric_limits<float>::max()) ? ENTITY_FEATURE_NOVELTY_THRESHOLD + 0.1f : std::sqrt(min_distance_sq);
+
+    if (actual_distance > ENTITY_FEATURE_NOVELTY_THRESHOLD) {
+        novelty_score = actual_distance; // Use the distance as the novelty score
+        m_curiosityScore += novelty_score * ENTITY_NOVELTY_REWARD_MULTIPLIER;
+
+        m_seenEntityFeaturesLog.push_back(features);
+        if (m_seenEntityFeaturesLog.size() > MAX_SEEN_FEATURES_LOG_SIZE) {
+            m_seenEntityFeaturesLog.pop_front();
+        }
+        // UTIL_ServerPrintf("Bot %s: Novel entity interaction (%s with %s), novelty: %.2f, new curiosity: %.2f\n",
+        //                   STRING(m_pEdict->v.netname), interaction_type.c_str(), STRING(pEntity->v.classname),
+        //                   novelty_score, m_curiosityScore);
+    }
+}
+
+// Placeholder for where to hook OnTakeDamage
+// This would typically be called by the engine or game DLL when the bot takes damage.
+// void RCBotBase::OnTakeDamage(edict_t* pInflictor, edict_t* pAttacker, float flDamage, int bitsDamageType) {
+//    if (pAttacker && pAttacker != m_pEdict) {
+//        processEntityInteractionNovelty(pAttacker, "damaged_me");
+//        m_accumulatedRewardSinceLastTransition -= flDamage * 0.02f; // Example damage penalty
+//    }
+// }

@@ -244,7 +244,7 @@
     <ClCompile Include="rcbot_mod.cpp" />
     <ClCompile Include="rcbot_navigator.cpp" />
     <ClCompile Include="rcbot_profile.cpp" />
-    <ClCompile Include="rcbot_short_term_memory.cpp" />
+    <ClCompile Include="rcbot_replay_buffer.cpp" />
     <ClCompile Include="rcbot_chat_history.cpp" />
     <ClCompile Include="rcbot_chat_manager.cpp" />
     <ClCompile Include="rcbot_long_term_memory.cpp" />
@@ -287,6 +287,7 @@
     <ClInclude Include="rcbot_navigator.h" />
     <ClInclude Include="rcbot_ngram_model.h" />
     <ClInclude Include="rcbot_profile.h" />
+    <ClInclude Include="rl_types.h" />
     <ClInclude Include="SentimentAnalyzer.h" />
     <ClInclude Include="sqlite\sqlite3.h" />
     <ClInclude Include="rcbot_short_term_memory.h" />
