@@ -5,6 +5,13 @@
 #include <string> // For state description if needed
 #include <deque>  // For potential use in state or action history
 
+namespace RLStateProps {
+    // THIS VALUE MUST BE MANUALLY KEPT IN SYNC with features added in RCBotRLHelper::getCurrentBotState()
+    // Health, Armor, Pos(3), Vel(4), Flags(5), Ammo(5), CurrWpnID, Cooldowns(2), ObjInfo(4), Percept(2), Timers(1), TaskCompl(1), OpponentChars(6)
+    //  1   +   1  +   3   +  4   +   5    +   5    +    1    +     2      +    4    +    2     +    1     +    1      +      6       = 36 Features
+    static const int NUM_STATE_FEATURES = 36;
+}
+
 // Simplified State Representation (Example)
 // This will need to be expanded significantly with actual game variables.
 struct BotState {
@@ -80,8 +87,8 @@ enum class ObjectiveInteractionType : int {
     PRIMARY_INTERACT_USE,     // Press 'use' once (e.g., button, door, initial hostage interaction)
     USE_FOR_DURATION,         // Press and hold 'use' (e.g., defuse, plant, some control points)
     TOUCH_TO_ACTIVATE,        // Physical contact needed (e.g., flag pickup, some triggers)
+    BE_IN_PROXIMITY_FOR_DURATION // New type for control points, area triggers
     // More complex types for future consideration:
-    // BE_IN_PROXIMITY_FOR_DURATION,
     // ESCORT_TARGET,
 };
 

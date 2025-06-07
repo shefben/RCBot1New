@@ -57,16 +57,15 @@ BotState RCBotRLHelper::getCurrentBotState(
     float currentTaskCompletionRatio
 ) const {
     BotState current_s;
-    current_s.features.reserve(45); // Increased reserve for new features
+    // RLStateProps::NUM_STATE_FEATURES is 36 based on rl_types.h
 
-    if (!pEdict) { // Should ideally not happen if called from an active bot
-        // Fill with a default "invalid" state if necessary, maintaining feature vector size
-        // Current feature count before new placeholders:
-        // Basic(2) + Loc(3) + Vel(4) + Status(5) + Ammo(5) + CurWpn(1) + Cooldown(2) + Obj(4) + Percept(2) + Timers(1) + Task(1) = 30
-        // The old opponent section had 6, new one also has 6. Total target ~36.
-        for(size_t i = 0; i < 36; ++i) current_s.features.push_back(0.0f); // Adjust size to match actual feature count
-        return current_s;
+    if (!pEdict || pEdict->free || (pEdict->v.deadflag != DEAD_NO && pEdict->v.deadflag != DEAD_RESPAWNABLE)) {
+        current_s.features.resize(RLStateProps::NUM_STATE_FEATURES, 0.0f); // Initialize with zeros
+        return current_s; // Return zeroed state if bot not valid or dead
     }
+
+    current_s.features.clear(); // Clear before reserving if we are not resizing
+    current_s.features.reserve(RLStateProps::NUM_STATE_FEATURES);
 
     // 1. Basic Stats (Normalized [0,1])
     current_s.features.push_back(std::max(0.0f, pEdict->v.health / 100.0f));

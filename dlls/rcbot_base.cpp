@@ -49,7 +49,14 @@ static bool g_debug_simulate_flag_is_loose_team2 = false;
 // static const float INTERACTION_PLANT_TIME_CONST = 3.0f;  // Example
 
 
-RCBotBase ::RCBotBase()
+RCBotBase::RCBotBase() :
+    m_rlAgent(RLStateProps::NUM_STATE_FEATURES,
+              static_cast<int>(BotActionType::MAX_ACTIONS),
+              0.1f,  // learning_rate (alpha)
+              0.95f, // discount_factor (gamma)
+              0.2f)  // initial epsilon (exploration rate)
+    // NOTE: m_pVisibles and m_Utils are initialized with 'new' in the body, which is acceptable.
+    // m_pSchedule is initialized to nullptr in the body.
 {
 	m_pVisibles = new RCBotVisibles(this);
 	m_Utils = new RCBotUtilities();
@@ -58,6 +65,7 @@ RCBotBase ::RCBotBase()
 
     // Initialize members from all previous subtasks that should be here
     m_pLongTermMemory = nullptr;
+    m_lastLearnTime = 0.0f; // Initialize last learn time
     m_curiosityScore = 0.0f;
     m_currentFocusObjective = "";
     m_currentObjectiveFocusID = "";
@@ -165,7 +173,41 @@ void RCBotBase::spawnInit()
     m_debug_sim_has_bomb = false;
     m_debug_sim_has_enemy_flag = false;
     m_debug_sim_enemy_flag_team_id = 0;
+
+    m_lastLearnTime = gpGlobals ? gpGlobals->time : 0.0f;
+    m_rlAgent.loadModel(getRLModelFilename()); // Attempt to load model
 }
+
+// Helper function to generate filename for RL model
+std::string RCBotBase::getRLModelFilename() const {
+    if (m_pEdict && STRING(gpGlobals->mapname)[0] != '\0') {
+        // Check if rcbot/rl_models directory exists, create if not
+        // This is a simplified check; a robust solution might use platform-specific directory creation.
+        // For now, we assume the directory might need to be created manually or by an external script.
+        // Ensure "rcbot" directory exists at the game root.
+        // Ensure "rcbot/rl_models" directory exists.
+        // Example: CreateDirectory("rcbot", NULL); CreateDirectory("rcbot/rl_models", NULL);
+        // However, direct file system manipulation like CreateDirectory is often outside the scope
+        // of typical game DLLs for portability and permissions reasons.
+        // It's better to ensure these directories are part of the mod/bot's installation structure.
+
+        char filename[256];
+        // Use a safe way to get bot's name, STRING(m_pEdict->v.netname) might be empty initially on some engine versions
+        const char* botName = STRING(m_pEdict->v.netname);
+        if (!botName || botName[0] == '\0') {
+            // Fallback if netname is not yet available (e.g. during early spawn)
+            // Using entindex might be an option for a unique ID, but less readable.
+            // For now, a generic name if netname is unavailable.
+            snprintf(filename, sizeof(filename), "rcbot/rl_models/%s_bot_rl_model_fallback.txt", STRING(gpGlobals->mapname));
+        } else {
+             // Sanitize botName if it can contain invalid path characters, though typically netnames are simple.
+            snprintf(filename, sizeof(filename), "rcbot/rl_models/%s_bot_%s_rl_model.txt", STRING(gpGlobals->mapname), botName);
+        }
+        return std::string(filename);
+    }
+    return "rcbot/rl_models/default_bot_rl_model.txt"; // Fallback if mapname or edict is not available
+}
+
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
 {
@@ -371,6 +413,35 @@ void RCBotBase::Think()
     }
     // --- End Dynamic Objective Selection (Part 1) ---
 
+    // --- RL Agent Action Selection ---
+    // Ensure m_previousState is valid (it's S_t for the current transition)
+    // m_chosenAIActionThisFrame will be A_t, which is executed in this frame,
+    // leading to S_t+1 (s_prime) and R_t.
+    if (!m_firstThinkCycle && !m_previousState.isEmpty()) { // Ensure previous state is valid
+        m_chosenAIActionThisFrame = m_rlAgent.chooseAction(m_previousState, true);
+    } else if (m_firstThinkCycle && !m_currentState.isEmpty()){ // For the very first action after state is initialized
+         m_chosenAIActionThisFrame = m_rlAgent.chooseAction(m_currentState, true);
+    } else {
+        // Fallback if state isn't properly initialized yet, though this should be rare.
+        // Or if it's the first cycle and m_currentState (which is previousState) isn't ready.
+        // The very first state for m_previousState is set at the end of Think().
+        // For the absolute first Think() call, m_previousState might be empty.
+        // Let's ensure m_previousState (S_t) is initialized before choosing action.
+        // This is handled by m_firstThinkCycle logic at the end of Think().
+        // For now, if m_previousState is empty here (should only be on the very first call to Think ever),
+        // we might need a default action or ensure state is initialized before this.
+        // The current structure initializes m_previousState at the END of Think().
+        // So, for the first actual decision, m_previousState will be based on the initial dummy state.
+        // This is generally acceptable.
+        // If m_previousState is still empty (e.g. if state creation failed), default to IDLE.
+        if (m_previousState.isEmpty()) {
+             m_chosenAIActionThisFrame = BotActionType::IDLE;
+        } else {
+            m_chosenAIActionThisFrame = m_rlAgent.chooseAction(m_previousState, true);
+        }
+    }
+    // --- End RL Agent Action Selection ---
+
     // --- Determine Interaction Type and Dispatch Schedule (Part 2: Dispatch) ---
     if (pursued_dynamic_objective_this_frame && !m_currentObjectiveFocusID.empty()) { // m_currentObjectiveFocusID is set if obj_meta was valid
         ObjectiveCandidateMetadata* obj_meta = g_ObjectiveManager.getObjectiveCandidateById(m_currentObjectiveFocusID); // Re-fetch is safe
@@ -388,11 +459,16 @@ void RCBotBase::Think()
                         determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
                         break;
                     case ObjectiveCategoryType::BOMB_SITE: {
-                        // Use global flags from RCBotManager
-                        if (gRCBotManager.m_debug_g_simulate_bomb_is_planted && m_pEdict->v.team == 2 /*CT*/) {
+                        // Use real or simulated bomb state
+                        bool use_real_bomb_state = true; // Could be a CVAR later
+                        bool bomb_is_actually_planted = use_real_bomb_state ?
+                                                        gRCBotManager.m_real_game_state_bomb_planted :
+                                                        gRCBotManager.m_debug_g_simulate_bomb_is_planted;
+
+                        if (bomb_is_actually_planted && m_pEdict->v.team == 2 /*CT*/) {
                            determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
                            determined_interaction_duration = RLConsts::INTERACTION_DEFUSE_TIME;
-                        } else if (!gRCBotManager.m_debug_g_simulate_bomb_is_planted && m_pEdict->v.team == 1 /*T*/ && m_debug_sim_has_bomb) { // Bot-specific flag
+                        } else if (!bomb_is_actually_planted && m_pEdict->v.team == 1 /*T*/ && m_debug_sim_has_bomb) { // Bot-specific flag for having bomb
                            determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
                            determined_interaction_duration = RLConsts::INTERACTION_PLANT_TIME;
                         } else {
@@ -453,6 +529,11 @@ void RCBotBase::Think()
                         determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
                         determined_interaction_duration = RLConsts::INTERACTION_RESCUE_TIME; // Example duration
                         break;
+                    case ObjectiveCategoryType::CONTROL_POINT: {
+                        determined_interaction_type = ObjectiveInteractionType::BE_IN_PROXIMITY_FOR_DURATION;
+                        determined_interaction_duration = RLConsts::INTERACTION_CONTROL_POINT_CAPTURE_TIME;
+                        break;
+                    }
                     case ObjectiveCategoryType::WEAPON_ITEM:
                     case ObjectiveCategoryType::AMMO_ITEM:
                     case ObjectiveCategoryType::HEALTH_ITEM:
@@ -762,6 +843,22 @@ void RCBotBase::Think()
         // If no edict (e.g. bot not fully spawned), reset firstThinkCycle to try init again
         m_firstThinkCycle = true;
     }
+
+    // --- RL Agent Learning Step ---
+    if (m_pEdict && gpGlobals && m_replayBuffer.size() >= static_cast<size_t>(MIN_REPLAY_BUFFER_SIZE_FOR_LEARNING) &&
+        m_replayBuffer.size() >= static_cast<size_t>(RL_LEARNING_BATCH_SIZE) &&
+        (gpGlobals->time - m_lastLearnTime) > RL_LEARN_INTERVAL) {
+
+       std::vector<RLTransition> batch = m_replayBuffer.sampleBatch(RL_LEARNING_BATCH_SIZE);
+       if (!batch.empty()) {
+           for (const RLTransition& transition : batch) {
+               m_rlAgent.learn(transition);
+           }
+           m_lastLearnTime = gpGlobals->time;
+           // UTIL_ServerPrintf("Bot %s learned from batch of %d experiences.\n", STRING(m_pEdict->v.netname), RL_LEARNING_BATCH_SIZE);
+       }
+    }
+    // --- End RL Agent Learning Step ---
 }
 
 #define BOT_MOVE_TO_MIN_DISTANCE 16.0f

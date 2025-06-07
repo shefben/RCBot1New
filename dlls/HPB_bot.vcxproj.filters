@@ -51,6 +51,9 @@
     <ClCompile Include="rcbot_ngram_model.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="rcbot_rl_agent.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="SentimentAnalyzer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -210,6 +213,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rcbot_ngram_model.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_rl_agent.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rl_types.h">

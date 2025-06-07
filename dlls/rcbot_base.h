@@ -15,6 +15,7 @@
 #include "rcbot_chat_history.h" // For RCBotChatHistory
 #include "rl_types.h"           // For BotState, BotActionType, RLTransition
 #include "RCBotRLHelper.h"      // For RCBotRLHelper
+#include "rcbot_rl_agent.h"     // For RCBotRLAgent
 #include <deque>                // For std::deque
 
 class RCBotProfile;
@@ -221,6 +222,14 @@ private:
     float m_lastEnemyHealth; // Health of the last enemy, for damage dealt calculation
     RCBotRLHelper m_rlHelper; // RL Helper instance
     std::string m_previousDynamicObjectiveFocusID_debug; // For tracking changes in dynamic objective focus for shaping rewards
+
+    // RL Agent and Learning Control
+    RCBotRLAgent m_rlAgent;
+    float m_lastLearnTime;
+    static const int MIN_REPLAY_BUFFER_SIZE_FOR_LEARNING = 200;
+    static const int RL_LEARNING_BATCH_SIZE = 32;
+    static const float RL_LEARN_INTERVAL = 0.5f;
+    std::string getRLModelFilename() const;
 
     // Dynamic Objective Interaction State
     ObjectiveInteractionType m_currentObjectiveInteractionType;

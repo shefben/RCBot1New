@@ -32,11 +32,17 @@ public:
 	void SimulateBombPlantedEvent(edict_t* pBombSiteObjectiveEdict, edict_t* pPlanterEdict); // Simulates a bomb plant
 
     // Public debug flags for global game state simulation
-    bool m_debug_g_bomb_planted;
-    bool m_debug_g_flag_loose_t1;
-    bool m_debug_g_flag_loose_t2;
+    bool m_debug_g_simulate_bomb_is_planted; // Renamed to match usage in commands
+    bool m_debug_g_simulate_flag_is_loose_team1; // Renamed
+    bool m_debug_g_simulate_flag_is_loose_team2; // Renamed
+
+    // Real game state tracking
+    bool m_real_game_state_bomb_planted;
+    Vector m_real_bomb_planted_location;
+    edict_t* m_real_planted_bomb_entity;
 
 private:
+    bool m_was_bomb_planted_last_frame;
 	RCBotBase* AddBot();
 
 	std::vector<RCBotBase*> m_Bots;

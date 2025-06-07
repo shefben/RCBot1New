@@ -250,6 +250,7 @@
     <ClCompile Include="rcbot_long_term_memory.cpp" />
     <ClCompile Include="rcbot_macro_action.cpp" />
     <ClCompile Include="rcbot_ngram_model.cpp" />
+    <ClCompile Include="rcbot_rl_agent.cpp" />
     <ClCompile Include="SentimentAnalyzer.cpp" />
     <ClCompile Include="rcbot_dynamic_objectives.cpp" />
     <ClCompile Include="RCBotRLHelper.cpp" />
@@ -291,13 +292,14 @@
     <ClInclude Include="rcbot_navigator.h" />
     <ClInclude Include="rcbot_ngram_model.h" />
     <ClInclude Include="rcbot_profile.h" />
+    <ClInclude Include="rcbot_rl_agent.h" />
     <ClInclude Include="rcbot_dynamic_objectives.h" />
     <ClInclude Include="RCBotRLHelper.h" />
     <ClInclude Include="rcbot_schedule_obj_interaction.h" />
     <ClInclude Include="rl_types.h" />
     <ClInclude Include="SentimentAnalyzer.h" />
     <ClInclude Include="sqlite\sqlite3.h" />
-    <ClInclude Include="rcbot_short_term_memory.h" /> // This line is already present and correct
+    <ClInclude Include="rcbot_short_term_memory.h" />
     <ClInclude Include="rcbot_specialists.h" />
     <ClInclude Include="rcbot_strings.h" />
     <ClInclude Include="rcbot_task_utility.h" />

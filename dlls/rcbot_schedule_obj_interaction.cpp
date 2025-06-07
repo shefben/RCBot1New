@@ -5,6 +5,7 @@
 #include "util.h"           // For UTIL_ServerPrintf (debugging), MAKE_VECTORS
 #include "util_shared.h"    // For DotProduct, NormalizeSafe (if available, else use Vector::Normalize())
 #include "in_buttons.h"     // For IN_USE
+#include "RCBotRLHelper.h"  // For RLConsts namespace
 
 // Constants for the schedule
 static const float NAVIGATION_STOP_DISTANCE_DEFAULT = 50.0f;
@@ -168,6 +169,23 @@ RCBotTaskState ScheduleExecuteObjectiveInteraction::Execute(RCBotBase* pBot) {
                 case ObjectiveInteractionType::TOUCH_TO_ACTIVATE:
                     m_currentState = InteractionState::COMPLETED;
                     break;
+                case ObjectiveInteractionType::BE_IN_PROXIMITY_FOR_DURATION: {
+                    pBot->setMoveTo(Vector(0,0,0),0); // Ensure bot stays put
+
+                    float distance_sq_to_obj = (pBot->getViewOrigin() - m_targetObjectiveLocation).LengthSquared();
+
+                    // Using CONTROL_POINT_CAPTURE_RADIUS from RLConsts
+                    if (distance_sq_to_obj > RLConsts::CONTROL_POINT_CAPTURE_RADIUS * RLConsts::CONTROL_POINT_CAPTURE_RADIUS) {
+                        // UTIL_ServerPrintf("DEBUG: Schedule %s INTERACTING (proximity) failed for %s, bot moved away from capture radius.\n", GetName().c_str(), m_targetObjectiveID.c_str());
+                        m_currentState = InteractionState::FAILED; // Or NAVIGATING to return to point
+                    } else {
+                        m_interactionTimer += dt;
+                        if (m_interactionTimer >= m_interactionDurationNeeded) {
+                            m_currentState = InteractionState::COMPLETED;
+                        }
+                    }
+                    break;
+                }
                 default:
                     // UTIL_ServerPrintf("DEBUG: Schedule %s INTERACTING failed for %s, unknown interaction type %d\n", GetName().c_str(), m_targetObjectiveID.c_str(), static_cast<int>(m_interactionType));
                     m_currentState = InteractionState::FAILED;

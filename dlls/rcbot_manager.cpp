@@ -54,12 +54,139 @@ RCBotManager::RCBotManager()
 	m_fNodeDrawTime = 0.0f;
     m_timeSinceLastObjectiveDecay = 0.0f;
 	// m_longTermMemory is implicitly default-constructed
+
+    // Initialize debug simulation flags
+    m_debug_g_simulate_bomb_is_planted = false;
+    m_debug_g_simulate_flag_is_loose_team1 = false;
+    m_debug_g_simulate_flag_is_loose_team2 = false;
+
+    // Initialize real game state tracking
+    m_real_game_state_bomb_planted = false;
+    m_real_bomb_planted_location = Vector(0,0,0);
+    m_real_planted_bomb_entity = nullptr;
+    m_was_bomb_planted_last_frame = false;
 }
 /// <summary>
 /// 
 /// </summary>
 void RCBotManager::Think()
 {
+    // --- Real Bomb State Detection ---
+    bool previous_bomb_state = m_real_game_state_bomb_planted;
+    bool bomb_found_this_frame = false;
+    edict_t* found_bomb_entity_this_frame = nullptr;
+    // Don't reset m_real_bomb_planted_location here, keep last known if it disappears temporarily,
+    // only update if a bomb is actively found. If not found, m_real_planted_bomb_entity will be null.
+
+    if (gpGlobals) { // Ensure gpGlobals is valid
+        edict_t* pCurrentEntity = nullptr;
+        for (int i = 1; i < gpGlobals->maxEntities; i++) {
+            pCurrentEntity = INDEXENT(i);
+            if (!pCurrentEntity || pCurrentEntity->free || (pCurrentEntity->v.flags & FL_KILLME)) {
+                continue;
+            }
+
+            const char* classname = STRING(pCurrentEntity->v.classname);
+            const char* modelname = STRING(pCurrentEntity->v.model);
+            bool is_potential_c4 = false;
+
+            if (strcmp(classname, "grenade") == 0 && modelname && strstr(modelname, "c4.mdl") != nullptr) {
+                is_potential_c4 = true;
+            } else if (strcmp(classname, "planted_c4") == 0 || strcmp(classname, "armoury_entity_c4_bomb") == 0 ) {
+                is_potential_c4 = true;
+            }
+
+            if (is_potential_c4) {
+                bool actually_planted = false;
+                if (strcmp(classname, "planted_c4") == 0 || strcmp(classname, "armoury_entity_c4_bomb") == 0) {
+                    actually_planted = true;
+                } else if (strcmp(classname, "grenade") == 0 && modelname && strstr(modelname, "c4.mdl") != nullptr) {
+                    // Check for EF_BRIGHTLIGHT (blinking light on CS C4)
+                    if (pCurrentEntity->v.effects & EF_BRIGHTLIGHT) {
+                        actually_planted = true;
+                    }
+                }
+
+                if (actually_planted) {
+                    bomb_found_this_frame = true;
+                    m_real_bomb_planted_location = pCurrentEntity->v.origin;
+                    found_bomb_entity_this_frame = pCurrentEntity;
+                    if (!previous_bomb_state) {
+                    //    UTIL_ServerPrintf("RCBotManager: Real bomb detected as PLANTED at (%.0f, %.0f, %.0f)\n",
+                    //                      m_real_bomb_planted_location.x, m_real_bomb_planted_location.y, m_real_bomb_planted_location.z);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    m_real_game_state_bomb_planted = bomb_found_this_frame;
+    m_real_planted_bomb_entity = found_bomb_entity_this_frame; // Update the member edict_t*
+
+    // if (previous_bomb_state && !m_real_game_state_bomb_planted) {
+    //    UTIL_ServerPrintf("RCBotManager: Real bomb is no longer detected (defused/exploded).\n");
+    // }
+
+    // --- Bomb Plant Event Detection & TD Update ---
+    if (m_real_game_state_bomb_planted && !m_was_bomb_planted_last_frame) {
+        // Bomb was just planted in this frame!
+        // UTIL_ServerPrintf("RCBotManager: Detected REAL bomb plant event.\n");
+
+        if (m_real_planted_bomb_entity) {
+            std::string bomb_site_obj_id_found = "";
+            const auto& objectives = g_ObjectiveManager.getObjectiveCandidates();
+            for (const auto& pair : objectives) {
+                const ObjectiveCandidateMetadata& obj_meta = pair.second;
+                if (obj_meta.category_tag == ObjectiveCategoryType::BOMB_SITE && obj_meta.is_active) {
+                    if ((obj_meta.location - m_real_bomb_planted_location).LengthSquared() < (50.0f * 50.0f)) { // 50 units proximity
+                        bomb_site_obj_id_found = obj_meta.unique_id;
+                        break;
+                    }
+                }
+            }
+
+            if (!bomb_site_obj_id_found.empty()) {
+                // UTIL_ServerPrintf("RCBotManager: Real bomb plant corresponds to objective ID %s\n", bomb_site_obj_id_found.c_str());
+
+                int planter_team_id = 1; // Default assumption: Terrorist (team 1) planted
+                edict_t* planter_edict = m_real_planted_bomb_entity->v.owner;
+                if (planter_edict && ENTINDEX(planter_edict) > 0 && ENTINDEX(planter_edict) <= gpGlobals->maxClients) {
+                     planter_team_id = planter_edict->v.team;
+                }
+                // If v.owner is not reliable, one might need to infer planter from game events or C4 entity's own team field if set.
+
+                float site_update_reward = 0.0f;
+                if (planter_team_id == 1) site_update_reward = REWARD_BOMB_PLANTED_AT_SITE_TERRORIST;
+
+                if (site_update_reward != 0.0f) { // Only apply if there's a relevant reward (e.g. T planted)
+                     g_ObjectiveManager.applyTDUpdate(bomb_site_obj_id_found, site_update_reward, "", 0.0f, false);
+                }
+
+                const auto& active_bots = getActiveBots();
+                for (RCBotBase* bot : active_bots) {
+                    if (bot && bot->getEdict() && bot->m_currentObjectiveFocusID == bomb_site_obj_id_found) {
+                        float bot_specific_reward = 0.0f;
+                        if (bot->getEdict()->v.team == planter_team_id) {
+                            bot_specific_reward = REWARD_BOMB_PLANTED_AT_SITE_TERRORIST;
+                        } else {
+                            bot_specific_reward = PENALTY_BOMB_PLANTED_AT_SITE_CT;
+                        }
+                        g_ObjectiveManager.applyTDUpdate(bot->m_currentObjectiveFocusID, bot_specific_reward, "", 0.0f, false);
+                    }
+                }
+            } else {
+                // UTIL_ServerPrintf("RCBotManager: Real bomb plant at (%.0f, %.0f, %.0f) did not match any known BOMB_SITE objective.\n",
+                //    m_real_bomb_planted_location.x, m_real_bomb_planted_location.y, m_real_bomb_planted_location.z);
+                // Consider creating a new dynamic objective here if it's a valid plant location not yet known.
+                // g_ObjectiveManager.discoverObjectiveCandidate(m_real_planted_bomb_entity, m_real_bomb_planted_location, "bombsite_discovered_by_plant", "real_event_discovery", 0); // Team 0 for neutral site
+            }
+        }
+    }
+    m_was_bomb_planted_last_frame = m_real_game_state_bomb_planted; // Update for next frame
+    // --- End Bomb Plant Event Detection & TD Update ---
+
+    // --- End Real Bomb State Detection --- // This comment seems misplaced, should be after the first block. The new block is self-contained.
+
 	for ( auto pBot : m_Bots )
 	{
 		pBot->Think();
@@ -441,6 +568,17 @@ void RCBotManager::KickBot()
 void RCBotManager::LevelInit()
 {
 	m_fAddRemoveBotTime = 0.0f;
+
+    // Reset real game state tracking for new level
+    m_real_game_state_bomb_planted = false;
+    m_real_bomb_planted_location = Vector(0,0,0);
+    m_real_planted_bomb_entity = nullptr;
+    m_was_bomb_planted_last_frame = false;
+
+    // Debug flags are typically set by commands, but can be reset here if desired
+    // m_debug_g_simulate_bomb_is_planted = false;
+    // m_debug_g_simulate_flag_is_loose_team1 = false;
+    // m_debug_g_simulate_flag_is_loose_team2 = false;
 
 	OnLevelChange();
 

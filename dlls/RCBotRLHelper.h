@@ -34,6 +34,9 @@ namespace RLConsts {
     // Interaction Durations
     static const float INTERACTION_DEFUSE_TIME = 7.0f; // Example defuse time
     static const float INTERACTION_PLANT_TIME = 3.0f;  // Example plant time
+    static const float INTERACTION_RESCUE_TIME = 1.0f; // Example for hostage interaction start
+    static const float INTERACTION_CONTROL_POINT_CAPTURE_TIME = 10.0f; // Example capture time
+    static const float CONTROL_POINT_CAPTURE_RADIUS = 150.0f; // Example radius
 }
 
 class RCBotRLHelper {
