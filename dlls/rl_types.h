@@ -74,4 +74,15 @@ struct RLTransition {
     RLTransition() : action(BotActionType::IDLE), reward(0.0f), is_terminal(false) {}
 };
 
+// Defines how a bot might interact with a dynamic objective
+enum class ObjectiveInteractionType : int {
+    NONE = 0,
+    PRIMARY_INTERACT_USE,     // Press 'use' once (e.g., button, door, initial hostage interaction)
+    USE_FOR_DURATION,         // Press and hold 'use' (e.g., defuse, plant, some control points)
+    TOUCH_TO_ACTIVATE,        // Physical contact needed (e.g., flag pickup, some triggers)
+    // More complex types for future consideration:
+    // BE_IN_PROXIMITY_FOR_DURATION,
+    // ESCORT_TARGET,
+};
+
 #endif // RL_TYPES_H

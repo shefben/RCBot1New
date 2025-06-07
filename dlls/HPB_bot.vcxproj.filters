@@ -60,6 +60,9 @@
     <ClCompile Include="RCBotRLHelper.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="rcbot_schedule_obj_interaction.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="rcbot_short_term_memory.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -213,6 +216,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RCBotRLHelper.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_schedule_obj_interaction.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rcbot_dynamic_objectives.h">

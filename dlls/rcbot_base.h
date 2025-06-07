@@ -222,6 +222,11 @@ private:
     RCBotRLHelper m_rlHelper; // RL Helper instance
     std::string m_previousDynamicObjectiveFocusID_debug; // For tracking changes in dynamic objective focus for shaping rewards
 
+    // Dynamic Objective Interaction State
+    ObjectiveInteractionType m_currentObjectiveInteractionType;
+    float m_objectiveInteractionDuration; // For timed interactions like USE_FOR_DURATION
+    bool m_debug_sim_has_bomb; // Debug flag for simulating if bot has the bomb
+
 	// Curiosity and Novelty Detection
 	float m_curiosityScore;
 	std::set<std::string> m_encounteredEntityClasses;

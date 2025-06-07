@@ -253,6 +253,7 @@
     <ClCompile Include="SentimentAnalyzer.cpp" />
     <ClCompile Include="rcbot_dynamic_objectives.cpp" />
     <ClCompile Include="RCBotRLHelper.cpp" />
+    <ClCompile Include="rcbot_schedule_obj_interaction.cpp" />
     <ClCompile Include="rcbot_short_term_memory.cpp" />
     <ClCompile Include="rcbot_specialists.cpp" />
     <ClCompile Include="rcbot_strings.cpp" />
@@ -292,6 +293,7 @@
     <ClInclude Include="rcbot_profile.h" />
     <ClInclude Include="rcbot_dynamic_objectives.h" />
     <ClInclude Include="RCBotRLHelper.h" />
+    <ClInclude Include="rcbot_schedule_obj_interaction.h" />
     <ClInclude Include="rl_types.h" />
     <ClInclude Include="SentimentAnalyzer.h" />
     <ClInclude Include="sqlite\sqlite3.h" />

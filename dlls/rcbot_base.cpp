@@ -38,6 +38,14 @@ static const float DISTANCE_PENALTY_FACTOR_DYN_OBJ = 0.0005f;
 static const uint8_t DYNAMIC_OBJECTIVE_MOVE_PRIORITY = 3;
 // Note: <cfloat> or <limits> should be included for FLT_MAX or std::numeric_limits
 
+// Simulated game state flags for testing objective interactions
+static bool g_debug_simulate_bomb_is_planted = false;
+// (If multiple sites, might need g_debug_simulate_bomb_planted_at_A, g_debug_simulate_bomb_planted_at_B)
+
+// Interaction Durations (defined in RLConsts in RCBotRLHelper.h, no need to redefine here)
+// static const float INTERACTION_DEFUSE_TIME_CONST = 7.0f; // Example
+// static const float INTERACTION_PLANT_TIME_CONST = 3.0f;  // Example
+
 
 RCBotBase ::RCBotBase()
 {
@@ -75,6 +83,10 @@ RCBotBase ::RCBotBase()
     m_timeSpentIdleOrStuck = 0.0f;
     // m_replayBuffer, m_chatContextMemory, m_seenEntityFeaturesLog are default constructed
     // m_currentState, m_previousState are default constructed
+
+    m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
+    m_objectiveInteractionDuration = 0.0f;
+    m_debug_sim_has_bomb = false;
 
 	Init(); // Calls spawnInit
     loadMacroActions(); // From macro subtask
@@ -143,6 +155,10 @@ void RCBotBase::spawnInit()
     m_pLastEnemy.Set(nullptr);
     m_lastEnemyHealth = 0.0f;
     m_previousDynamicObjectiveFocusID_debug = "";
+
+    m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
+    m_objectiveInteractionDuration = 0.0f;
+    m_debug_sim_has_bomb = false;
 }
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
@@ -329,43 +345,101 @@ void RCBotBase::Think()
             }
 
             if (!selected_objective_id.empty()) {
-                m_currentObjectiveFocusID = selected_objective_id;
-                m_chosenAIActionThisFrame = BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE;
+                ObjectiveCandidateMetadata* obj_meta = g_ObjectiveManager.getObjectiveCandidateById(selected_objective_id);
+                pursued_dynamic_objective_this_frame = true; // Mark that we've selected one
 
-                setMoveTo(selected_objective_location, DYNAMIC_OBJECTIVE_MOVE_PRIORITY);
-                setLookAt(selected_objective_location, DYNAMIC_OBJECTIVE_MOVE_PRIORITY);
+                if (obj_meta) {
+                    // Store these for the RL state and general focus, regardless of specific interaction schedule
+                    m_currentObjectiveFocusID = selected_objective_id;
+                    m_focusObjectiveLocation = obj_meta->location;
+                    m_hasFocusObjectiveLocation = true;
+                    if (m_currentObjectiveFocusID != m_previousDynamicObjectiveFocusID_debug) {
+                         m_previousDistanceToFocusObjective = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
+                         m_previousDynamicObjectiveFocusID_debug = m_currentObjectiveFocusID;
+                    }
 
-                if (m_currentObjectiveFocusID != m_previousDynamicObjectiveFocusID_debug) {
-                     m_focusObjectiveLocation = selected_objective_location;
-                     m_hasFocusObjectiveLocation = true;
-                     m_previousDistanceToFocusObjective = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
-                     m_previousDynamicObjectiveFocusID_debug = m_currentObjectiveFocusID;
-                }
-                pursued_dynamic_objective_this_frame = true;
-                // UTIL_ServerPrintf("Bot %s pursuing dynamic objective %s (Score: %.2f)\n", STRING(m_pEdict->v.netname), selected_objective_id.c_str(), best_score);
+                    ObjectiveInteractionType determined_interaction_type = ObjectiveInteractionType::NONE;
+                    float determined_interaction_duration = 0.0f;
 
-                // If we've chosen a dynamic objective, and there's an existing schedule,
-                // interrupt to allow the utility system to potentially pick a more relevant task,
-                // or to let direct movement take over if no task is chosen.
-                if (m_pSchedule != nullptr) {
-                    m_bInterrupted = true;
+                    switch (obj_meta->category_tag) {
+                        case ObjectiveCategoryType::BUTTON_ENTITY:
+                        case ObjectiveCategoryType::DOOR_ENTITY:
+                            determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
+                            break;
+                        case ObjectiveCategoryType::BOMB_SITE: {
+                            if (g_debug_simulate_bomb_is_planted && m_pEdict && m_pEdict->v.team == 2 /*CT*/) {
+                               determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
+                               determined_interaction_duration = INTERACTION_DEFUSE_TIME_CONST;
+                            } else if (!g_debug_simulate_bomb_is_planted && m_pEdict && m_pEdict->v.team == 1 /*T*/ && m_debug_sim_has_bomb) {
+                               determined_interaction_type = ObjectiveInteractionType::USE_FOR_DURATION;
+                               determined_interaction_duration = INTERACTION_PLANT_TIME_CONST;
+                            } else {
+                               determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE; // Default: just reach the site
+                            }
+                            break;
+                        }
+                        case ObjectiveCategoryType::FLAG_STAND:
+                        case ObjectiveCategoryType::FLAG_CAPTURE_POINT:
+                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                            break;
+                        case ObjectiveCategoryType::HOSTAGE_ENTITY:
+                            determined_interaction_type = ObjectiveInteractionType::PRIMARY_INTERACT_USE;
+                            break;
+                        case ObjectiveCategoryType::WEAPON_ITEM:
+                        case ObjectiveCategoryType::AMMO_ITEM:
+                        case ObjectiveCategoryType::HEALTH_ITEM:
+                        case ObjectiveCategoryType::ARMOR_ITEM:
+                        case ObjectiveCategoryType::KEY_ITEM:
+                        case ObjectiveCategoryType::GENERIC_TRIGGER:
+                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                            break;
+                        default:
+                            determined_interaction_type = ObjectiveInteractionType::TOUCH_TO_ACTIVATE;
+                            break;
+                    }
+
+                    m_currentObjectiveInteractionType = determined_interaction_type;
+                    m_objectiveInteractionDuration = determined_interaction_duration;
+                    m_chosenAIActionThisFrame = BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE;
+
+                    // UTIL_ServerPrintf("Bot %s: Obj %s, Cat %s, Interaction %d, Duration %.1f\n",
+                    //    STRING(m_pEdict->v.netname), selected_objective_id.c_str(), objectiveCategoryToString(obj_meta->category_tag).c_str(),
+                    //    static_cast<int>(m_currentObjectiveInteractionType), m_objectiveInteractionDuration);
+
+                    if (m_pSchedule) { // Clear any existing schedule
+                        delete m_pSchedule;
+                        m_pSchedule = nullptr;
+                    }
+
+                    m_pSchedule = new ScheduleExecuteObjectiveInteraction(this, selected_objective_id, m_currentObjectiveInteractionType, m_objectiveInteractionDuration);
+                    if (m_Utils) m_Utils->setUtility(nullptr);
+                    m_bInterrupted = false;  // This is a new, planned schedule, not an interruption of itself.
+
+                } else { // No valid objective metadata found for selected_id
+                    m_currentObjectiveFocusID = "";
+                    m_currentObjectiveInteractionType = ObjectiveInteractionType::NONE;
+                    pursued_dynamic_objective_this_frame = false; // Reset this flag
+                    // Let bot fall back to other behaviors
                 }
             }
         }
     }
-    // --- End Dynamic Objective Selection Logic ---
+    // --- End Dynamic Objective Selection & Dispatch Logic ---
 
     // --- Distance-Based Shaping Reward for Focused Objective (Dynamic or Intrinsic if location is set) ---
-    if (m_hasFocusObjectiveLocation && !m_currentObjectiveFocusID.empty() && m_pEdict && isAlive()) { // Check isAlive
+    // Ensure there's some focus ID (dynamic or intrinsic string) if hasFocusObjectiveLocation is true
+    if (m_hasFocusObjectiveLocation && !(m_currentObjectiveFocusID.empty() && m_currentFocusObjective.empty()) && m_pEdict && isAlive()) {
         float currentDistance = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
         if (m_previousDistanceToFocusObjective > 0) { // Ensure previous distance was valid
             float distanceDelta = m_previousDistanceToFocusObjective - currentDistance;
-            if (std::abs(distanceDelta) > RLConsts::SIGNIFICANT_PROGRESS_THRESHOLD_FOR_SHAPING) { // Use std::abs for change in either direction
-                // Reward for getting closer, penalize for moving away from a *focused* objective
+            // Only reward positive progress or penalize significant negative progress for focused objectives.
+            if (distanceDelta > RLConsts::SIGNIFICANT_PROGRESS_THRESHOLD_FOR_SHAPING ||
+                distanceDelta < -RLConsts::SIGNIFICANT_PROGRESS_THRESHOLD_FOR_SHAPING) {
                 float reward = distanceDelta * RLConsts::REWARD_OBJECTIVE_PROGRESS;
                 m_rlHelper.addReward(reward);
+                // std::string focus_id_for_print = m_currentObjectiveFocusID.empty() ? m_currentFocusObjective : m_currentObjectiveFocusID;
                 // UTIL_ServerPrintf("Bot %s: Shaping reward for distance to obj %s: %.4f (Delta: %.2f)\n",
-                //    STRING(m_pEdict->v.netname), m_currentObjectiveFocusID.c_str(), reward, distanceDelta);
+                //    STRING(m_pEdict->v.netname), focus_id_for_print.c_str(), reward, distanceDelta);
             }
         }
         m_previousDistanceToFocusObjective = currentDistance;
@@ -546,6 +620,41 @@ void RCBotBase::Think()
     }
 
     // After AI logic has set m_chosenAIActionThisFrame for the current state (m_previousState if !m_firstThinkCycle, or freshly computed state if m_firstThinkCycle)
+
+    // --- Interaction-Specific Shaping Rewards ---
+    // Check after m_pEdict->v.button has been set by AI logic (schedule/utility or direct action choice for TACTIC_PURSUE_DYNAMIC_OBJECTIVE)
+    if (m_chosenAIActionThisFrame == BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE &&
+        !m_currentObjectiveFocusID.empty() && m_pEdict && (m_pEdict->v.button & IN_USE) && isAlive()) {
+
+        ObjectiveCandidateMetadata* focused_obj = g_ObjectiveManager.getObjectiveCandidateById(m_currentObjectiveFocusID);
+        if (focused_obj && focused_obj->is_active) {
+            float distance_to_obj = (focused_obj->location - m_pEdict->v.origin).Length();
+
+            if (distance_to_obj < 64.0f) { // Bot is very close to the objective
+                if (focused_obj->category_tag == ObjectiveCategoryType::BUTTON_ENTITY ||
+                    focused_obj->category_tag == ObjectiveCategoryType::DOOR_ENTITY) {
+
+                    Vector to_obj = (focused_obj->location - getViewOrigin()).NormalizeSafe();
+                    if(to_obj.IsZero()) { // if objective is at view origin, dot product is undefined. Assume facing.
+                        m_rlHelper.addReward(RLConsts::REWARD_SHAPING_INTERACT_BUTTON_DOOR);
+                    } else {
+                        MAKE_VECTORS(m_pEdict->v.v_angle);
+                        float dot_product = DotProduct(to_obj, gpGlobals->v_forward);
+                        if (dot_product > 0.707) { // Bot is facing within ~45 degrees of objective
+                            m_rlHelper.addReward(RLConsts::REWARD_SHAPING_INTERACT_BUTTON_DOOR);
+                            // UTIL_ServerPrintf("Bot %s got shaping reward for using button/door obj %s\n", STRING(m_pEdict->v.netname), m_currentObjectiveFocusID.c_str());
+                        }
+                    }
+                }
+                // Placeholder for item pickup shaping rewards:
+                // else if (focused_obj->category_tag == ObjectiveCategoryType::WEAPON_ITEM && /* some_flag_or_event_indicating_pickup_of_this_item */) {
+                //    m_rlHelper.addReward(RLConsts::REWARD_SHAPING_PICKUP_ITEM_OBJECTIVE);
+                // }
+            }
+        }
+    }
+    // --- End Interaction-Specific Shaping Rewards ---
+
     m_lastAction = m_chosenAIActionThisFrame;
 
     if (m_firstThinkCycle && m_pEdict) {

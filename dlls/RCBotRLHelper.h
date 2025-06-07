@@ -30,6 +30,10 @@ namespace RLConsts {
     static const float REWARD_SHAPING_INTERACT_BUTTON_DOOR = 0.15f;
     static const float REWARD_SHAPING_PICKUP_ITEM_OBJECTIVE = 0.2f; // If item pickup can be detected
     static const float SIGNIFICANT_PROGRESS_THRESHOLD_FOR_SHAPING = 1.0f; // Min distance change for distance-based shaping
+
+    // Interaction Durations
+    static const float INTERACTION_DEFUSE_TIME = 7.0f; // Example defuse time
+    static const float INTERACTION_PLANT_TIME = 3.0f;  // Example plant time
 }
 
 class RCBotRLHelper {
