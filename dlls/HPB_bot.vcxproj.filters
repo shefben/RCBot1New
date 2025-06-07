@@ -54,6 +54,9 @@
     <ClCompile Include="SentimentAnalyzer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="rcbot_dynamic_objectives.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="sqlite\\sqlite3.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -201,6 +204,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rl_types.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="rcbot_dynamic_objectives.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="SentimentAnalyzer.h">

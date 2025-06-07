@@ -251,6 +251,7 @@
     <ClCompile Include="rcbot_macro_action.cpp" />
     <ClCompile Include="rcbot_ngram_model.cpp" />
     <ClCompile Include="SentimentAnalyzer.cpp" />
+    <ClCompile Include="rcbot_dynamic_objectives.cpp" />
     <ClCompile Include="rcbot_specialists.cpp" />
     <ClCompile Include="rcbot_strings.cpp" />
     <ClCompile Include="rcbot_task_utility.cpp" />
@@ -287,6 +288,7 @@
     <ClInclude Include="rcbot_navigator.h" />
     <ClInclude Include="rcbot_ngram_model.h" />
     <ClInclude Include="rcbot_profile.h" />
+    <ClInclude Include="rcbot_dynamic_objectives.h" />
     <ClInclude Include="rl_types.h" />
     <ClInclude Include="SentimentAnalyzer.h" />
     <ClInclude Include="sqlite\sqlite3.h" />

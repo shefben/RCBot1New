@@ -8,6 +8,7 @@
 #include "rcbot_utils.h"
 #include "rcbot_navigator.h"
 #include "rcbot_chat_manager.h" // For g_ChatManager
+#include "rcbot_dynamic_objectives.h" // For g_ObjectiveManager
 /// <summary>
 /// 
 /// </summary>
@@ -74,7 +75,67 @@ void RCBotManager::Think()
 	}
 
 	gRCBotNavigatorNodes->gameFrame();
+
+    // Simulate Round End for testing objective outcome recording
+    // static float s_timeSinceLastRoundEndSim = 0.0f; // Needs to be member or proper static if used long-term
+    // if (gpGlobals) { // Ensure gpGlobals is valid
+    //     s_timeSinceLastRoundEndSim += gpGlobals->frametime;
+    //     if (s_timeSinceLastRoundEndSim > 60.0f) { // Simulate round end every 60 seconds
+    //         int winning_team = (RANDOM_LONG(0,100) < 45) ? 1 : ((RANDOM_LONG(0,100) < 50) ? 2 : 0); // Random winner (more chance for team 1/2, then draw)
+    //         OnRoundEnd_Simulated(winning_team);
+    //         s_timeSinceLastRoundEndSim = 0.0f;
+    //     }
+    // }
 }
+
+void RCBotManager::OnRoundEnd_Simulated(int winning_team_id) {
+    UTIL_ServerPrintf("RCBotManager: Simulated Round End. Winning Team ID: %d\n", winning_team_id);
+    const auto& active_bots = getActiveBots();
+
+    for (RCBotBase* bot : active_bots) {
+        if (!bot || !bot->getEdict() || bot->m_currentObjectiveFocusID.empty()) { // Accessing public member for now as per subtask plan
+            continue;
+        }
+
+        ObjectiveCandidateMetadata* objective_data = g_ObjectiveManager.getObjectiveCandidateById(bot->m_currentObjectiveFocusID);
+        if (objective_data) {
+            bool bot_team_won_round = (bot->getEdict()->v.team == winning_team_id && winning_team_id != 0);
+            bool positive_outcome_for_objective = false;
+
+            // Determine if the objective itself was "achieved" based on team win.
+            // This is a simplification. A real system would check objective-specific completion.
+            if (objective_data->team_ownership == 0) { // Neutral objective (e.g., press a button)
+                // If bot was focused on it, and its team won, consider it a positive interaction for now.
+                // Or, if it's a general objective, any win might be positive.
+                // This needs more game-specific logic. For now, let's assume neutral objectives
+                // are positive if the bot's team wins the round while it was focused.
+                positive_outcome_for_objective = bot_team_won_round;
+            } else if (objective_data->team_ownership == bot->getEdict()->v.team) {
+                // Bot was focused on an objective belonging to its own team.
+                // If bot's team won, it's a positive outcome for pursuing/defending this objective.
+                positive_outcome_for_objective = bot_team_won_round;
+            } else {
+                // Bot was focused on an objective belonging to the enemy team (e.g., attacking it).
+                // If bot's team won, it's a positive outcome (they successfully overcame/captured it).
+                positive_outcome_for_objective = bot_team_won_round;
+            }
+
+            UTIL_ServerPrintf("Bot %s (Team %d) was focused on objective %s (Team %d). Outcome recorded: %s\n",
+                STRING(bot->getEdict()->v.netname), bot->getEdict()->v.team,
+                bot->m_currentObjectiveFocusID.c_str(), objective_data->team_ownership,
+                positive_outcome_for_objective ? "POSITIVE" : "NEGATIVE");
+
+            g_ObjectiveManager.recordObjectiveInteractionOutcome(bot->m_currentObjectiveFocusID, positive_outcome_for_objective);
+        }
+        // Bot should clear its specific focus ID after round end.
+        // The general m_currentFocusObjective (string description) might persist or be re-evaluated.
+        // bot->m_currentObjectiveFocusID = ""; // This should be done in RCBotBase when it processes round end for itself
+    }
+
+    g_ObjectiveManager.clearObjectivesOnNewRound(); // Reset round-specific stats for all objectives
+}
+
+
 /// <summary>
 /// 
 /// </summary>
@@ -228,4 +289,41 @@ void RCBotManager::LevelInit()
 
 	// Initialize/Re-initialize chat models for the new level
 	g_ChatManager.initializeChatModels();
+
+    // Initialize Dynamic Objective System for the new map
+    g_ObjectiveManager.clearAllObjectives(); // Clear objectives from previous map
+    if (gpGlobals) { // Ensure gpGlobals is valid
+        g_ObjectiveManager.setCurrentMapName(STRING(gpGlobals->mapname));
+    }
+
+    // Iterate through entities to discover initial set of objective candidates
+    if (gpGlobals) {
+        edict_t* pCurrentEntity = nullptr;
+        for (int i = 1; i < gpGlobals->maxEntities; i++) { // Start from 1, 0 is worldspawn
+            pCurrentEntity = INDEXENT(i);
+
+            // Check if the edict is valid and not free/marked for deletion
+            if (!pCurrentEntity || pCurrentEntity->free || (pCurrentEntity->v.flags & FL_KILLME)) {
+                continue;
+            }
+            // Skip clients (players/bots) for this type of objective discovery for now,
+            // unless specific player roles become objectives (e.g. VIP).
+            if (pCurrentEntity->v.flags & (FL_CLIENT | FL_FAKECLIENT)) {
+                continue;
+            }
+
+            // The discoverObjectiveCandidate method will use its internal list of interesting classnames.
+            // It needs pEntity, location, classname, event_type, and optional team.
+            // For entity iteration, location and classname are from pEntity.
+            g_ObjectiveManager.discoverObjectiveCandidate(
+                pCurrentEntity,
+                pCurrentEntity->v.origin,
+                STRING(pCurrentEntity->v.classname),
+                "entity_iteration",
+                pCurrentEntity->v.team // Pass entity's team if available
+            );
+        }
+        UTIL_ServerPrintf("RCBotManager: Initial entity scan for dynamic objectives complete. Found %d candidates.\n",
+            g_ObjectiveManager.getObjectiveCandidates().size());
+    }
 }

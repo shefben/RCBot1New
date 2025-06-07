@@ -228,7 +228,9 @@ public:
 
 	// Objective Interest System
 	std::map<std::string, float> m_objectiveInterests; // Key: objective identifier, Value: interest score
-	std::string m_currentFocusObjective;
+	std::string m_currentFocusObjective; // String description from intrinsic motivation system
+	std::string m_currentObjectiveFocusID; // unique_id from DynamicObjectiveManager for the current high-level objective
+	float m_timeObjectiveFocused;      // Timestamp when m_currentObjectiveFocusID was set
 
 public:
 	// Constants for interest system

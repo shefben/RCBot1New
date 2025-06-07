@@ -27,6 +27,8 @@ public:
 	RCBotBase* getBotByEdict(edict_t* pEdict);
 	const std::vector<RCBotBase*>& getActiveBots() const; // Added to get bot list
 
+	void OnRoundEnd_Simulated(int winning_team_id); // Simulated round end handler
+
 private:
 	RCBotBase* AddBot();
 
