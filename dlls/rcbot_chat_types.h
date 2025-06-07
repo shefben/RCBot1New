@@ -40,14 +40,16 @@ struct TaggedChatMessage {
     BotPersona persona_at_time_of_sending; // The persona of the bot when this message was generated/sent
     float timestamp;                       // Time the message was generated/sent (e.g., gpGlobals->time)
     float sentiment_score;                 // Numerical sentiment score, e.g., from -1.0 (v. neg) to 1.0 (v. pos)
+    int sender_entity_index;               // ENTINDEX() of the sender; 0 or -1 if system/unknown
 
     // Default constructor
     TaggedChatMessage(const std::string& msg = "",
                       ChatSentiment s = SENTIMENT_NEUTRAL,
                       BotPersona p = PERSONA_NEUTRAL,
                       float ts = 0.0f,
-                      float num_score = 0.0f)
-        : message(msg), sentiment(s), persona_at_time_of_sending(p), timestamp(ts), sentiment_score(num_score) {}
+                      float num_score = 0.0f,
+                      int sender_idx = 0) // Default sender index to 0 (world or unknown)
+        : message(msg), sentiment(s), persona_at_time_of_sending(p), timestamp(ts), sentiment_score(num_score), sender_entity_index(sender_idx) {}
 };
 
 

@@ -14,6 +14,7 @@
 #include "rcbot_chat_manager.h" // For g_ChatManager
 #include "rcbot_chat_history.h" // For RCBotChatHistory
 #include "rl_types.h"           // For BotState, BotActionType, RLTransition
+#include "RCBotRLHelper.h"      // For RCBotRLHelper
 #include <deque>                // For std::deque
 
 class RCBotProfile;
@@ -181,6 +182,7 @@ public:
 protected:
 	edict_t* m_pEdict;
 	EHandle m_pEnemy;
+	RCBotShortTermMemory m_shortTermMemory; // Short-term memory for game events
 private:
 	RCBotProfile* m_pProfile;
 	RCBotVisibles* m_pVisibles;
@@ -209,9 +211,15 @@ private:
 	// RL State and Action Tracking
 	BotState m_currentState;
 	BotState m_previousState;
-	BotActionType m_lastAction;
-	float m_accumulatedRewardSinceLastTransition;
+	BotActionType m_lastAction; // Action taken that led to m_currentState
+    BotActionType m_chosenAIActionThisFrame; // High-level AI action chosen in current Think
 	bool m_firstThinkCycle; // To handle initial state
+    float m_timeSinceLastDamageTaken;
+    float m_timeSpentIdleOrStuck;
+    float m_lastThinkHealth; // Health at the end of the previous Think cycle
+    EHandle m_pLastEnemy;    // Last enemy targeted, for damage dealt calculation
+    float m_lastEnemyHealth; // Health of the last enemy, for damage dealt calculation
+    RCBotRLHelper m_rlHelper; // RL Helper instance
 
 	// Curiosity and Novelty Detection
 	float m_curiosityScore;
@@ -300,9 +308,9 @@ public:
 	void processEntityInteractionNovelty(edict_t* pEntity, const std::string& interaction_type);
 
 private: // Helper methods for RL
-    BotState getCurrentBotState() const;
-    BotActionType determineBotAction() const; // Determines action taken that led to current state
-    void calculateReward(); // Calculates reward based on game events & updates accumulator
+    // getCurrentBotState() is now handled by m_rlHelper.getCurrentBotState(...)
+    BotActionType determineBotAction() const; // Returns m_chosenAIActionThisFrame
+    // calculateReward() is now handled by m_rlHelper.addReward(...)
 
     // Non-Visual Entity Interaction Novelty Helpers
     std::vector<float> extractEntityFeatures(edict_t* pEntity, const std::string& interaction_type) const;
@@ -312,6 +320,9 @@ public: // Constants for Entity Interaction Novelty
     static const size_t MAX_SEEN_FEATURES_LOG_SIZE = 200;
     static const float ENTITY_FEATURE_NOVELTY_THRESHOLD = 0.7f; // Min Euclidean distance to be "novel"
     static const float ENTITY_NOVELTY_REWARD_MULTIPLIER = 0.2f;
+
+public: // Game Event Recording
+    void recordGameEvent(const GameEvent& event);
 
 private: // Make persona private and expose via getter/setter
 	BotPersona m_persona;

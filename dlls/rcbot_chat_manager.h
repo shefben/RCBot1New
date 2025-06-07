@@ -18,7 +18,11 @@ public:
 
     // Generates a chat message for a bot based on context and persona
     // Context_trigger is a string indicating why the chat is being generated (e.g., "on_kill", "enemy_spotted")
-    TaggedChatMessage generateBotChat(RCBotBase* bot, const std::string& context_trigger, RCBotChatHistory* chat_history);
+    TaggedChatMessage generateBotChat(RCBotBase* bot,
+                                      const std::string& context_trigger,
+                                      RCBotChatHistory* chat_history,
+                                      float perceived_aggression,
+                                      float perceived_cooperation);
 
     // Potentially add methods here to load chat lines from files based on persona/sentiment/context
     // void loadChatDatabase();
@@ -31,7 +35,10 @@ private:
     bool m_modelsInitialized;    // Flag to prevent re-initialization
 
     // Helper to extract a seed phrase from context for N-gram generation
-    std::string getSeedFromContext(RCBotChatHistory* chat_history, const std::string& context_trigger);
+    std::string getSeedFromContext(RCBotChatHistory* chat_history,
+                                   const std::string& context_trigger,
+                                   float perceived_aggression,
+                                   float perceived_cooperation);
 
     SentimentAnalyzer m_sentimentAnalyzer; // Sentiment analyzer instance
     // std::map<BotPersona, std::map<ChatSentiment, std::vector<std::string>>> m_chatLines; // Future use for more structured chat

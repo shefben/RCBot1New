@@ -9,6 +9,12 @@
 #include "rcbot_navigator.h"
 #include "rcbot_chat_manager.h" // For g_ChatManager
 #include "rcbot_dynamic_objectives.h" // For g_ObjectiveManager
+
+// Constants for ProcessPlayerDeathEvent
+static const float OBJECTIVE_CONF_PENALTY_ON_DEATH_WHILE_PURSUING = -0.1f;
+static const float OBJECTIVE_CONF_BONUS_ON_KILL_NEAR_OBJECTIVE = 0.05f;
+static const float OBJECTIVE_PROXIMITY_FOR_RELEVANCE = 300.0f; // Units for "near objective"
+
 /// <summary>
 /// 
 /// </summary>
@@ -94,6 +100,39 @@ void RCBotManager::Think()
         if (m_timeSinceLastObjectiveDecay >= OBJECTIVE_DECAY_INTERVAL) {
             g_ObjectiveManager.decayAndUpdateObjectives(gpGlobals->time);
             m_timeSinceLastObjectiveDecay = 0.0f;
+        }
+    }
+
+    // Simulate Player Death Event for testing
+    static float s_timeSinceLastDeathSim = 0.0f;
+    if (gpGlobals) { // Ensure gpGlobals is valid
+        s_timeSinceLastDeathSim += gpGlobals->frametime;
+        if (s_timeSinceLastDeathSim > 20.0f && m_Bots.size() >= 1) { // Simulate a death every 20s if at least one bot
+            edict_t* pVictim = nullptr;
+            edict_t* pAttacker = nullptr;
+
+            if (m_Bots.size() >= 2) { // Prefer bot vs bot if possible
+                 pVictim = m_Bots[RAND_LONG(0, m_Bots.size()-1)]->getEdict();
+                 pAttacker = m_Bots[RAND_LONG(0, m_Bots.size()-1)]->getEdict();
+                 if (pVictim == pAttacker && m_Bots.size() > 1) { // Ensure attacker is different from victim
+                     int attacker_idx = RAND_LONG(0, m_Bots.size()-1);
+                     int victim_idx = (attacker_idx + 1) % m_Bots.size(); // Simple way to get a different index
+                     pAttacker = m_Bots[attacker_idx]->getEdict();
+                     pVictim = m_Bots[victim_idx]->getEdict();
+                 } else if (pVictim == pAttacker && m_Bots.size() == 1) {
+                     // If only one bot, simulate attacker as world (e.g. suicide, environment)
+                     pAttacker = gpGlobals->pEdictWorld;
+                 }
+            } else if (m_Bots.size() == 1) { // Only one bot
+                pVictim = m_Bots[0]->getEdict();
+                pAttacker = gpGlobals->pEdictWorld; // Simulate world as attacker
+            }
+
+
+            if (pVictim && pAttacker) {
+                 ProcessPlayerDeathEvent(pVictim, pAttacker);
+            }
+            s_timeSinceLastDeathSim = 0.0f;
         }
     }
 }
@@ -340,5 +379,56 @@ void RCBotManager::LevelInit()
     // Perform initial clustering after discovering objectives
     if (g_ObjectiveManager.getObjectiveCandidates().size() > 0) { // Only cluster if there's something to cluster
         g_ObjectiveManager.clusterObjectives(5); // Example: 5 clusters
+    }
+}
+
+
+void RCBotManager::ProcessPlayerDeathEvent(edict_t* pVictimEdict, edict_t* pAttackerEdict) {
+    if (!pVictimEdict || !pAttackerEdict || !gpGlobals) return;
+
+    // Scenario 1: An RCBot was the victim
+    RCBotBase* victim_bot = getBotByEdict(pVictimEdict);
+    if (victim_bot && victim_bot->getEdict() && !victim_bot->m_currentObjectiveFocusID.empty()) { // Check edict validity
+        ObjectiveCandidateMetadata* obj_meta = g_ObjectiveManager.getObjectiveCandidateById(victim_bot->m_currentObjectiveFocusID);
+        if (obj_meta && obj_meta->is_active) {
+            // Bot died while pursuing this objective - likely negative for this objective's perceived value/safety
+            g_ObjectiveManager.recordObjectiveInteractionOutcome(victim_bot->m_currentObjectiveFocusID, false);
+            // Using recordObjectiveInteractionOutcome which internally calls updateObjectiveConfidence based on its own logic.
+            // Direct confidence update as an alternative:
+            // g_ObjectiveManager.updateObjectiveConfidence(victim_bot->m_currentObjectiveFocusID, OBJECTIVE_CONF_PENALTY_ON_DEATH_WHILE_PURSUING);
+
+            // UTIL_ServerPrintf("Bot %s died pursuing obj %s. Confidence potentially updated via interaction outcome.\n",
+            //                   STRING(pVictimEdict->v.netname), victim_bot->m_currentObjectiveFocusID.c_str());
+        }
+    }
+
+    // Scenario 2: An RCBot was the attacker AND the victim was an enemy
+    RCBotBase* attacker_bot = getBotByEdict(pAttackerEdict);
+    if (attacker_bot && attacker_bot->getEdict() && !attacker_bot->m_currentObjectiveFocusID.empty() && pVictimEdict != pAttackerEdict) { // Check edict validity
+        // Simplified isEnemy check:
+        bool victim_is_enemy = true;
+        if (pVictimEdict->v.team != 0 && pAttackerEdict->v.team != 0 && pVictimEdict->v.team == pAttackerEdict->v.team) {
+            victim_is_enemy = false; // Simple team check for non-FFA (assumes team 0 is spectator or general)
+        }
+        // A more robust check would be: victim_is_enemy = attacker_bot->isEnemy(pVictimEdict);
+        // However, isEnemy might not be fully implemented or might be specific to the mod.
+
+        if (victim_is_enemy) {
+            ObjectiveCandidateMetadata* obj_meta = g_ObjectiveManager.getObjectiveCandidateById(attacker_bot->m_currentObjectiveFocusID);
+            if (obj_meta && obj_meta->is_active) {
+                // Bot killed an enemy while pursuing an objective.
+                // Check if the kill happened near the objective location.
+                float distance_to_objective = (pVictimEdict->v.origin - obj_meta->location).Length();
+                if (distance_to_objective < OBJECTIVE_PROXIMITY_FOR_RELEVANCE) {
+                    // Kill was relevant to the objective
+                    g_ObjectiveManager.recordObjectiveInteractionOutcome(attacker_bot->m_currentObjectiveFocusID, true);
+                    // Direct confidence update as an alternative:
+                    // g_ObjectiveManager.updateObjectiveConfidence(attacker_bot->m_currentObjectiveFocusID, OBJECTIVE_CONF_BONUS_ON_KILL_NEAR_OBJECTIVE);
+
+                    // UTIL_ServerPrintf("Bot %s killed enemy near obj %s. Confidence potentially updated via interaction outcome.\n",
+                    //                   STRING(pAttackerEdict->v.netname), attacker_bot->m_currentObjectiveFocusID.c_str());
+                }
+            }
+        }
     }
 }

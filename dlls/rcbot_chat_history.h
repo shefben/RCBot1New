@@ -69,6 +69,10 @@ public:
     // Clears all items from the history.
     void clear();
 
+    // Gets the timestamp of the last chat message received from a specific player.
+    // Returns 0.0f if no message from that player is found in the history.
+    float getLastPlayerInteractionTime(int player_entity_index) const;
+
 private:
     std::deque<ContextualItem> m_context_window;
 };

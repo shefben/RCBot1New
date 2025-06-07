@@ -34,23 +34,33 @@ enum class BotActionType : int {
     IDLE = 0,
     MOVE_FORWARD,
     MOVE_BACKWARD,
-    MOVE_LEFT,
-    MOVE_RIGHT,
+    MOVE_LEFT,     // Might be less used if strafing is preferred
+    MOVE_RIGHT,    // Might be less used if strafing is preferred
+    STRAFE_LEFT,
+    STRAFE_RIGHT,
     JUMP,
-    DUCK, // Continuous press
-    WALK, // Modifier for slower movement
-    PRIMARY_ATTACK,
-    SECONDARY_ATTACK,
-    RELOAD,
-    USE_ITEM, // Generic use
-    CHANGE_WEAPON_TO_PRIMARY,
-    CHANGE_WEAPON_TO_SECONDARY,
-    CHANGE_WEAPON_TO_MELEE,
-    // Example for specific macro actions, can be extended
-    USE_MACRO_ACTION_STRAFE_JUMP_LEFT,
-    USE_MACRO_ACTION_PEEK_COVER_RIGHT,
-    // ... other specific actions
-    MAX_ACTIONS // Keep this last for count if needed (e.g., for Q-table size)
+    DUCK_BEGIN,    // Action to start ducking
+    DUCK_MAINTAIN, // State of being ducked (might be more state than action)
+    DUCK_END,      // Action to stop ducking (stand up)
+    PRIMARY_ATTACK_PRESS,
+    PRIMARY_ATTACK_RELEASE, // If attacks are not just single frame events
+    SECONDARY_ATTACK_PRESS,
+    SECONDARY_ATTACK_RELEASE,
+    RELOAD_PRESS,
+    USE_ITEM_PRESS, // For 'use' key on doors, objectives etc.
+    // Tactical/High-Level Intentions
+    TACTIC_ENGAGE_ENEMY,
+    TACTIC_PURSUE_OBJECTIVE,
+    TACTIC_RETREAT_OR_FALLBACK,
+    TACTIC_HOLD_POSITION,
+    TACTIC_USE_MACRO, // A generic action if a macro is active
+    // Potentially more specific macros if they are distinct choices
+    // TACTIC_USE_MACRO_STRAFE_JUMP,
+    // TACTIC_USE_MACRO_PEEK_COVER,
+    SWITCH_WEAPON_PRIMARY, // Example, could be more granular
+    SWITCH_WEAPON_SECONDARY,
+    SWITCH_WEAPON_MELEE,
+    MAX_ACTIONS // For sizing arrays or loops
 };
 
 struct RLTransition {

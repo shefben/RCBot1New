@@ -75,6 +75,8 @@ public:
     // Call this on map load to set the current map name context
     void setCurrentMapName(const std::string& mapName);
 
+    // Checks if a classname is part of the globally interesting set
+    bool isClassnameGloballyInteresting(const std::string& classname) const;
 
 private:
     std::map<std::string, ObjectiveCandidateMetadata> m_objective_candidates;

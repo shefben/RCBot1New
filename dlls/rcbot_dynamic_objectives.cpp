@@ -27,6 +27,15 @@ static const std::set<std::string> s_interestingObjectiveClassnames = {
     // or game-specific entities not listed here. This list is a starting point.
 };
 
+// Decay and Pruning Parameters
+static const float OBJECTIVE_CONFIDENCE_DECAY_RATE = 0.995f; // Per call to decay, if conditions met
+static const float OBJECTIVE_TIME_UNSEEN_FOR_DECAY = 60.0f; // Seconds: Time unseen before confidence starts decaying
+static const float OBJECTIVE_MIN_CONFIDENCE_FOR_ACTIVE = 0.1f; // Confidence below which an objective becomes inactive
+
+static const float OBJECTIVE_PRUNE_CONFIDENCE_THRESHOLD = 0.02f; // Confidence below which an inactive objective is a candidate for pruning
+static const float OBJECTIVE_TIME_UNSEEN_FOR_PRUNING = 300.0f;  // Seconds: Markedly longer than time for just deactivation
+
+
 DynamicObjectiveManager::DynamicObjectiveManager() {
     if (gpGlobals) { // gpGlobals might be null if manager is constructed very early
         m_currentMapName = STRING(gpGlobals->mapname);
@@ -101,26 +110,14 @@ void DynamicObjectiveManager::discoverObjectiveCandidate(edict_t* pEntity, const
         return;
     }
 
-    // Filter by interesting classnames if event_type is entity-based and from general iteration
-    if ((discovery_event_type == "entity_iteration" || discovery_event_type == "entity_spawn")) {
-        if (s_interestingObjectiveClassnames.find(obj_classname) == s_interestingObjectiveClassnames.end()) {
-            // If it's a trigger, we might still be interested even if not in the primary list,
-            // but for now, strict filtering for entity_iteration/spawn.
-            if (obj_classname.rfind("trigger_", 0) != 0) { // A simple check if it starts with trigger_
-                 //return; // Not in our list of objectives to automatically discover from iteration/spawn
-            }
-            // For now, let's allow all triggers to pass this initial filter if not explicitly denied,
-            // their confidence will remain low unless something else boosts them.
-            // A more refined system would have categories of interesting classnames.
-            // For this phase, the main filter is being in s_interestingObjectiveClassnames.
-            // So, if not found, we return.
-            if (s_interestingObjectiveClassnames.find(obj_classname) == s_interestingObjectiveClassnames.end()) {
-                 return;
-            }
-        }
+    bool is_globally_interesting = s_interestingObjectiveClassnames.count(obj_classname) > 0;
+
+    // If discovered via general iteration/spawn, it MUST be globally interesting to be added.
+    if ((discovery_event_type == "entity_iteration" || discovery_event_type == "entity_spawn") && !is_globally_interesting) {
+        return;
     }
-    // For other discovery_event_types like "trigger_touch_player" triggered by specific game logic,
-    // we might always log it, or that logic should pre-filter.
+    // If discovered via direct interaction (damage, bump, novelty, pickup), log it even if not globally interesting.
+    // The confidence mechanism will then determine its value.
 
     std::string id = generateUniqueIDForLocation(obj_classname, obj_location);
     if (id.empty()) return; // Could not generate a valid ID
@@ -132,13 +129,20 @@ void DynamicObjectiveManager::discoverObjectiveCandidate(edict_t* pEntity, const
         // New candidate
         ObjectiveCandidateMetadata data;
         data.unique_id = id;
-        data.entity_classname = obj_classname;
+        data.entity_classname = obj_classname; // Store the actual classname
         data.location = obj_location;
         data.first_seen_timestamp = current_time;
         data.last_seen_timestamp = current_time;
         data.is_active = true; // Assumed active when first discovered
-        data.confidence = 0.15f; // Slightly higher initial confidence for being on the "interesting" list
         data.times_seen_or_touched = 1;
+
+        if (!is_globally_interesting) {
+            // For unknown types discovered via interaction, start with lower confidence
+            data.confidence = 0.05f;
+            // data.is_exploratory_objective = true; // Could add such a flag
+        } else {
+            data.confidence = 0.1f; // Standard initial confidence for known types (was 0.15f, reduced for consistency)
+        }
 
         if (pEntity && pEntity->v.team > 0 && pEntity->v.team < 3) { // Assuming 1 and 2 are main teams
             data.team_ownership = pEntity->v.team;
@@ -225,19 +229,53 @@ void DynamicObjectiveManager::clearObjectivesOnNewRound() {
 }
 
 void DynamicObjectiveManager::decayAndUpdateObjectives(float current_time) {
-    // Placeholder stub
-    // Logic for this will be in Phase 4 (6.4)
-    // Example decay:
-    // for (auto& pair : m_objective_candidates) {
-    //     if (pair.second.is_active) {
-    //         // Decay confidence if not recently updated or interacted with
-    //         if (current_time - pair.second.last_seen_timestamp > SOME_THRESHOLD) {
-    //             pair.second.confidence *= CONFIDENCE_DECAY_RATE;
-    //             if (pair.second.confidence < MIN_CONFIDENCE_TO_BE_ACTIVE) {
-    //                 pair.second.is_active = false;
-    //             }
-    //         }
-    //     }
+    if (m_objective_candidates.empty()) return;
+
+    // --- Decay Confidence and Deactivate Objectives ---
+    for (auto& pair : m_objective_candidates) {
+        ObjectiveCandidateMetadata& data = pair.second;
+
+        if (data.is_active) {
+            // Decay confidence if not recently seen or interacted with
+            // (Interaction logic would update last_seen_timestamp or a similar interaction_timestamp)
+            if (current_time - data.last_seen_timestamp > OBJECTIVE_TIME_UNSEEN_FOR_DECAY) {
+                data.confidence *= OBJECTIVE_CONFIDENCE_DECAY_RATE;
+                // UTIL_ServerPrintf("DOM: Decaying confidence for active objective %s to %.2f (unseen for %.1fs)\n",
+                //                   data.unique_id.c_str(), data.confidence, current_time - data.last_seen_timestamp);
+
+                if (data.confidence < OBJECTIVE_MIN_CONFIDENCE_FOR_ACTIVE) {
+                    data.is_active = false;
+                    // UTIL_ServerPrintf("DOM: Deactivating objective %s due to low confidence (%.2f)\n",
+                    //                   data.unique_id.c_str(), data.confidence);
+                }
+            }
+        } else { // If already inactive, can also decay further, but perhaps slower
+            if (current_time - data.last_seen_timestamp > OBJECTIVE_TIME_UNSEEN_FOR_DECAY * 2.0f) { // Slower decay for already inactive ones
+                 data.confidence *= (OBJECTIVE_CONFIDENCE_DECAY_RATE + (1.0f - OBJECTIVE_CONFIDENCE_DECAY_RATE) / 2.0f); // Slower rate
+            }
+        }
+    }
+
+    // --- Pruning Stale Objectives ---
+    int pruned_count = 0;
+    for (auto it = m_objective_candidates.begin(); it != m_objective_candidates.end(); /* manual increment */) {
+        ObjectiveCandidateMetadata& data = it->second;
+        float time_since_last_seen = current_time - data.last_seen_timestamp;
+
+        if (!data.is_active &&
+            data.confidence < OBJECTIVE_PRUNE_CONFIDENCE_THRESHOLD &&
+            time_since_last_seen > OBJECTIVE_TIME_UNSEEN_FOR_PRUNING) {
+
+            // UTIL_ServerPrintf("DOM: Pruning stale objective %s (Conf: %.2f, Unseen: %.1fs)\n",
+            //                   data.unique_id.c_str(), data.confidence, time_since_last_seen);
+            it = m_objective_candidates.erase(it); // Erase returns iterator to the next element
+            pruned_count++;
+        } else {
+            ++it;
+        }
+    }
+    // if (pruned_count > 0) {
+    //     UTIL_ServerPrintf("DOM: Pruning complete. Pruned %d objectives.\n", pruned_count);
     // }
 }
 
@@ -463,4 +501,8 @@ void DynamicObjectiveManager::clusterObjectives(int k_num_clusters) {
     //                           pair.first.c_str(), pair.second.entity_classname.c_str(), pair.second.cluster_id);
     //     }
     // }
+}
+
+bool DynamicObjectiveManager::isClassnameGloballyInteresting(const std::string& classname) const {
+    return s_interestingObjectiveClassnames.count(classname) > 0;
 }

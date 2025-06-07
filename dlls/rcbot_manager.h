@@ -28,6 +28,7 @@ public:
 	const std::vector<RCBotBase*>& getActiveBots() const; // Added to get bot list
 
 	void OnRoundEnd_Simulated(int winning_team_id); // Simulated round end handler
+	void ProcessPlayerDeathEvent(edict_t* pVictimEdict, edict_t* pAttackerEdict); // Handles player death events
 
 private:
 	RCBotBase* AddBot();

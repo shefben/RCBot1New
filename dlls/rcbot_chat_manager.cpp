@@ -41,7 +41,10 @@ void RCBotChatManager::initializeChatModels(const std::string& training_data_ove
 }
 
 
-std::string RCBotChatManager::getSeedFromContext(RCBotChatHistory* chat_history, const std::string& context_trigger) {
+std::string RCBotChatManager::getSeedFromContext(RCBotChatHistory* chat_history,
+                                               const std::string& context_trigger,
+                                               float perceived_aggression,
+                                               float perceived_cooperation) {
     if (!chat_history) return "";
 
     std::string seed = "";
@@ -67,11 +70,26 @@ std::string RCBotChatManager::getSeedFromContext(RCBotChatHistory* chat_history,
         std::vector<std::string> trigger_tokens = m_ngramModel.tokenize(context_trigger);
         if(!trigger_tokens.empty()) seed = trigger_tokens.back(); // last word of trigger
     }
+
+    // New: Bias seed based on perception if context seed is weak
+    if (seed.empty() || seed.length() < 3) {
+        if (perceived_aggression > 0.7f && perceived_cooperation < 0.3f) {
+            seed = "enemy"; // Aggressive seed
+            // UTIL_ServerPrintf("RCBotChatManager: Using aggressive perception seed ('enemy') for bot %s\n", STRING(bot->getEdict()->v.netname));
+        } else if (perceived_cooperation > 0.7f && perceived_aggression < 0.3f) {
+            seed = "team";  // Cooperative seed
+            // UTIL_ServerPrintf("RCBotChatManager: Using cooperative perception seed ('team') for bot %s\n", STRING(bot->getEdict()->v.netname));
+        }
+    }
     return seed;
 }
 
 
-TaggedChatMessage RCBotChatManager::generateBotChat(RCBotBase* bot, const std::string& context_trigger, RCBotChatHistory* chat_history) {
+TaggedChatMessage RCBotChatManager::generateBotChat(RCBotBase* bot,
+                                                  const std::string& context_trigger,
+                                                  RCBotChatHistory* chat_history,
+                                                  float perceived_aggression,
+                                                  float perceived_cooperation) {
     if (!bot || !bot->getEdict()) {
         return TaggedChatMessage("Error: Bot pointer or edict null.", SENTIMENT_NEGATIVE, PERSONA_NEUTRAL, gpGlobals->time);
     }
@@ -101,18 +119,11 @@ TaggedChatMessage RCBotChatManager::generateBotChat(RCBotBase* bot, const std::s
     // UTIL_ServerPrintf("RCBotChatManager: Bot %s (Persona %d, Style: [%s]) Trigger: %s\n",
     //     STRING(bot->getEdict()->v.netname), (int)current_persona, style_vec_str, context_trigger.c_str());
 
+    // Pass perceived aggression/cooperation to getSeedFromContext
+    std::string seed_phrase = getSeedFromContext(chat_history, context_trigger, perceived_aggression, perceived_cooperation);
 
-    std::string seed_phrase = getSeedFromContext(chat_history, context_trigger);
+    // Removed the style_vector based seed generation here as it's now handled in getSeedFromContext based on perception scores.
 
-    // Conceptual: Influence seed phrase based on style_vector if seed_phrase is still weak
-    if (seed_phrase.empty() || seed_phrase.length() < 3) { // If context seed is too short or absent
-        if (!style_vector.empty()) {
-            // Example: style_vector[0] = aggression, style_vector[1] = support, style_vector[2] = playfulness
-            if (style_vector[0] > 0.7f) seed_phrase = "enemy"; // Aggressive seed
-            else if (style_vector[1] > 0.7f) seed_phrase = "team";  // Supportive seed
-            else if (style_vector.size() > 2 && style_vector[2] > 0.7f) seed_phrase = "fun"; // Playful seed
-        }
-    }
     // UTIL_ServerPrintf("RCBotChatManager: Bot %s using seed_phrase: '%s'\n", STRING(bot->getEdict()->v.netname), seed_phrase.c_str());
 
 
@@ -184,7 +195,8 @@ void RCBotChatManager::recordPlayerChat(edict_t* pPlayerEdict, const std::string
         SENTIMENT_NEUTRAL, // Could be derived from score if thresholds are set
         PERSONA_NEUTRAL,   // Or a specific PERSONA_PLAYER if defined
         gpGlobals->time,
-        sentimentScore     // Store the analyzed numerical score
+        sentimentScore,    // Store the analyzed numerical score
+        pPlayerEdict ? ENTINDEX(pPlayerEdict) : 0 // Set sender_entity_index
     );
 
     UTIL_ServerPrintf("Player '%s' said: '%s' (Analyzed Sentiment Score: %.2f)\n",

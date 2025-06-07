@@ -1,3 +1,4 @@
+// Test comment for no-op edit
 #include "rcbot_base.h"
 #include "extdll.h"
 #include "meta_api.h"
@@ -9,16 +10,26 @@
 #include "rcbot_profile.h"
 #include "rcbot_visibles.h"
 #include "rcbot_weapons.h"
-#include "rcbot_navigator.h" // For gRCBotNavigatorNodes
-#include "enginecallback.h" // For GetEngineFunctions, server_print
-#include "util.h" // For UTIL_SayTextAll (needed for chat)
-#include "rcbot_chat_manager.h" // For g_ChatManager
+#include "rcbot_navigator.h"
+#include "enginecallback.h"
+#include "util.h"
+#include "rcbot_chat_manager.h"
+#include "rcbot_dynamic_objectives.h"
+#include "rcbot_short_term_memory.h" // For GameEvent, RCBotReplayBuffer
+#include "rcbot_long_term_memory.h"
+#include "rcbot_macro_action.h"
+#include "rl_types.h"
+
 #include <math.h>
-#include <string> // Required for std::string manipulation in Think
-#include <random> // For random chat chance
-#include <functional> // For std::hash
-#include <limits>     // For std::numeric_limits
-#include <cmath>      // For std::sqrt, std::pow
+#include <string>
+#include <vector>
+#include <deque>
+#include <map>
+#include <set>
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <cmath>
 
 RCBotBase ::RCBotBase()
 {
@@ -26,38 +37,39 @@ RCBotBase ::RCBotBase()
 	m_Utils = new RCBotUtilities();
 	m_pSchedule = nullptr;
 	setFOV(RCBOT_DEFAULT_FOV);
-	// m_shortTermMemory is implicitly default-constructed
-	// Explicitly: m_shortTermMemory = RCBotShortTermMemory();
-	m_pLongTermMemory = nullptr; // Initialize LTM pointer
-	m_curiosityScore = 0.0f;
-	// m_encounteredEntityClasses, m_visitedWaypoints, m_itemCuriosity are default-initialized
-	// m_objectiveInterests is default-initialized (empty map)
-	m_currentFocusObjective = ""; // No initial focus
-	m_currentMacroAction = nullptr; // No active macro action initially
-	m_persona = PERSONA_NEUTRAL; // Default persona
-	m_lastTauntTime = 0.0f;
-	m_damageTakenPostTaunt = 0;
-	m_engagementScore = 0.0f;
-	m_aggressivenessScore = 0.0f;
-	m_timeSinceLastPersonaEvaluation = 0.0f;
-	// m_sentChatMessages is default-initialized (empty deque)
-    // m_chatContextMemory is default-initialized
-	m_previousDistanceToFocusObjective = -1.0f;
-	m_hasFocusObjectiveLocation = false;
-	m_shapingRewardAccumulator = 0.0f;
-	m_perceivedPlayerAggression = 0.5f; // Initialize perception
-	m_perceivedPlayerCooperation = 0.5f; // Initialize perception
-	m_lastInteractingPlayerEdict.Set(nullptr); // Initialize EHandle
 
-    // RL specific initializations
-    m_accumulatedRewardSinceLastTransition = 0.0f;
+    // Initialize members from all previous subtasks that should be here
+    m_pLongTermMemory = nullptr;
+    m_curiosityScore = 0.0f;
+    m_currentFocusObjective = "";
+    m_currentObjectiveFocusID = "";
+    m_timeObjectiveFocused = 0.0f;
+    m_currentMacroAction = nullptr;
+    m_persona = PERSONA_NEUTRAL;
+    m_lastTauntTime = 0.0f;
+    m_damageTakenPostTaunt = 0;
+    m_engagementScore = 0.0f;
+    m_aggressivenessScore = 0.0f;
+    m_timeSinceLastPersonaEvaluation = 0.0f;
+    m_previousDistanceToFocusObjective = -1.0f;
+    m_hasFocusObjectiveLocation = false;
+    m_shapingRewardAccumulator = 0.0f;
+    m_perceivedPlayerAggression = PERCEPTION_BASELINE;
+    m_perceivedPlayerCooperation = PERCEPTION_BASELINE;
+    m_lastInteractingPlayerEdict.Set(nullptr);
+
+    // RL specific initializations from this subtask (7.7)
+    // m_accumulatedRewardSinceLastTransition is now managed by m_rlHelper
     m_firstThinkCycle = true;
     m_lastAction = BotActionType::IDLE;
-    // m_currentState and m_previousState will be default constructed
-    // m_seenEntityFeaturesLog is default constructed
+    m_chosenAIActionThisFrame = BotActionType::IDLE;
+    m_timeSinceLastDamageTaken = 0.0f;
+    m_timeSpentIdleOrStuck = 0.0f;
+    // m_replayBuffer, m_chatContextMemory, m_seenEntityFeaturesLog are default constructed
+    // m_currentState, m_previousState are default constructed
 
-	Init();
-	loadMacroActions(); // Load predefined macro actions
+	Init(); // Calls spawnInit
+    loadMacroActions(); // From macro subtask
 }
 
 RCBotBase :: ~RCBotBase()
@@ -82,24 +94,46 @@ void RCBotBase::spawnInit()
 	m_fRespawnTime = gpGlobals->time;
 	m_fLastRunPlayerMove = gpGlobals->time;
 	m_pEnemy.Set(nullptr);
-	m_chatContextMemory.clear(); // Clear chat context on spawn/respawn
 
-	// Reset perception on spawn/respawn
-	m_perceivedPlayerAggression = 0.5f;
-	m_perceivedPlayerCooperation = 0.5f;
-	m_lastInteractingPlayerEdict.Set(nullptr);
-	m_previousDistanceToFocusObjective = -1.0f; // Also reset objective focus distance
-	m_hasFocusObjectiveLocation = false;
+    // Clear/Reset all relevant states
+    m_replayBuffer.clear();
+    m_seenEntityFeaturesLog.clear();
+    m_chatContextMemory.clear();
+
+    m_curiosityScore = 0.0f;
+    m_itemCuriosity.clear();
+    m_encounteredEntityClasses.clear();
+    m_visitedWaypoints.clear();
+
+    m_objectiveInterests.clear();
+    m_currentFocusObjective = "";
+    m_currentObjectiveFocusID = "";
+    m_timeObjectiveFocused = 0.0f;
+    m_previousDistanceToFocusObjective = -1.0f;
+    m_hasFocusObjectiveLocation = false;
     m_shapingRewardAccumulator = 0.0f;
 
-    // RL specific resets
-    m_accumulatedRewardSinceLastTransition = 0.0f;
+    m_perceivedPlayerAggression = PERCEPTION_BASELINE;
+    m_perceivedPlayerCooperation = PERCEPTION_BASELINE;
+    m_lastInteractingPlayerEdict.Set(nullptr);
+
+    m_timeSinceLastDamageTaken = 0.0f;
+    m_timeSpentIdleOrStuck = 0.0f;
+    // m_accumulatedRewardSinceLastTransition is now managed by m_rlHelper
+    m_rlHelper.reset(); // Reset RL helper for the new spawn
+    if (m_pEdict) { // Ensure edict is valid before accessing health
+        m_lastThinkHealth = m_pEdict->v.health;
+    } else {
+        m_lastThinkHealth = 100.0f; // Default if edict not ready (should not happen ideally)
+    }
     m_firstThinkCycle = true;
     m_currentState.clear();
     m_previousState.clear();
     m_lastAction = BotActionType::IDLE;
-    m_replayBuffer.clear(); // Clear replay buffer on spawn
-    m_seenEntityFeaturesLog.clear(); // Clear seen entity features log
+    m_chosenAIActionThisFrame = BotActionType::IDLE;
+
+    m_pLastEnemy.Set(nullptr);
+    m_lastEnemyHealth = 0.0f;
 }
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
@@ -111,45 +145,18 @@ void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
 
 void RCBotBase::Think()
 {
-    // --- RL Transition Recording - Start of Frame ---
-    m_currentState = getCurrentBotState();
+	// Placeholder: Example of where game events could be recorded
+    // if (/* some event like taking damage happened */) {
+    //     GameEvent event(DAMAGE_EVENT, gpGlobals->time, /* damage amount */);
+    //     recordGameEvent(event);
+    // }
+    // if (/* some event like hearing a sound happened */) {
+    //     GameEvent event(HEAR_SOUND_EVENT, gpGlobals->time, /* sound origin */);
+    //     recordGameEvent(event);
+    // }
 
-    if (!m_firstThinkCycle && !m_previousState.isEmpty()) { // Ensure previousState has been populated
-        // At this point, m_accumulatedRewardSinceLastTransition should contain rewards
-        // from the actions taken *after* m_lastAction was decided in the previous frame,
-        // leading up to m_currentState.
-        // calculateReward(); // Call this if rewards are not updated by events directly
-
-        RLTransition transition;
-        transition.state = m_previousState;
-        transition.action = m_lastAction; // Action that led from previousState to currentState
-        transition.reward = m_accumulatedRewardSinceLastTransition;
-        transition.next_state = m_currentState;
-        transition.is_terminal = !isAlive();
-
-        m_replayBuffer.addTransition(transition);
-
-        m_accumulatedRewardSinceLastTransition = 0.0f; // Reset reward for the new cycle
-    }
-    m_previousState = m_currentState;
-    m_firstThinkCycle = false;
-    // --- End RL Transition Recording - Start of Frame ---
-
-
-    // Handle Macro Action execution first if one is active
-    if (m_currentMacroAction != nullptr) {
-        if (!isAlive()) { // Stop macro if bot dies
-             stopCurrentMacroAction();
-        } else if (m_currentMacroAction->isFinished()) {
-            // SERVER_PRINT("RCBot %s: Macro '%s' finished.\n", STRING(m_pEdict->v.netname), m_currentMacroAction->m_name.c_str());
-            stopCurrentMacroAction();
-        } else {
-            m_pEdict->v.button = 0;
-            m_currentMacroAction->update(this, gpGlobals->frametime);
-            m_lastAction = determineBotAction(); // Determine action after macro update
-            return;
-        }
-    }
+	// Increment timers
+    m_timeSinceLastDamageTaken += gpGlobals->frametime; // Assuming gpGlobals->frametime is available and accurate
 
 	m_pEdict->v.button = 0;
 	m_pEdict->v.impulse = 0;
@@ -159,9 +166,12 @@ void RCBotBase::Think()
 
 	if (!isAlive())
 	{
-		if (m_bPreviousAliveState == true)
+		if (m_bPreviousAliveState == true) // Bot was alive in the previous frame, now it's not
 		{
-			spawnInit();
+			// This is where the bot just died. Apply penalty.
+			m_rlHelper.addReward(RCBotRLHelper::RLConsts::PENALTY_BOT_DEATH, true); // true for terminal state
+
+			spawnInit(); // Reset states for next life
 			m_bPreviousAliveState = false;
 		}
 
@@ -175,14 +185,96 @@ void RCBotBase::Think()
 	}
 	else
 	{
+		// Bot is alive
+		if (m_pEdict && m_pEdict->v.health < m_lastThinkHealth)
+		{
+			float damageTaken = m_lastThinkHealth - m_pEdict->v.health;
+			if (damageTaken > 0) // Ensure we don't reward for health gain if logic changes
+			{
+				m_rlHelper.addReward(damageTaken * RCBotRLHelper::RLConsts::PENALTY_DAMAGE_TAKEN, false);
+                // Update timeSinceLastDamageTaken, could be useful for state or other logic
+                m_timeSinceLastDamageTaken = 0.0f;
+			}
+		}
+
 		if (m_bPreviousAliveState == false)
 		{
 			m_bPreviousAliveState = true;
-
-			m_pEdict->v.v_angle = m_pEdict->v.angles;
+			if (m_pEdict) { // Initialize m_lastThinkHealth here too if bot just spawned
+				m_lastThinkHealth = m_pEdict->v.health;
+                m_pEdict->v.v_angle = m_pEdict->v.angles;
+			}
 		}
 	}
 	
+    // Stuck/Idle detection - only if alive
+    if (isAlive() && m_pEdict) {
+        bool isPerformingSignificantAction = (m_pEdict->v.button & (IN_ATTACK | IN_USE | IN_JUMP)) != 0;
+        if (m_currentMacroAction && !m_currentMacroAction->isFinished()) {
+            isPerformingSignificantAction = true;
+        }
+
+        if (m_pEdict->v.velocity.Length2D() < RCBotRLHelper::RLConsts::MIN_MOVEMENT_SPEED_THRESHOLD && !isPerformingSignificantAction) {
+            m_timeSpentIdleOrStuck += gpGlobals->frametime; // Assumes gpGlobals->frametime is available
+        } else {
+            m_timeSpentIdleOrStuck = 0.0f; // Reset if moving or acting
+        }
+
+        if (m_timeSpentIdleOrStuck > RCBotRLHelper::RLConsts::MAX_IDLE_TIME_SECONDS) {
+            m_rlHelper.addReward(RCBotRLHelper::RLConsts::PENALTY_STUCK_OR_IDLE_LONG, false);
+            m_timeSpentIdleOrStuck = 0.0f; // Reset after applying penalty to avoid continuous penalization each frame
+        }
+    } else {
+        // If not alive or no edict, ensure time is reset
+        m_timeSpentIdleOrStuck = 0.0f;
+    }
+
+	// ---- Main AI Logic ----
+
+    // RL Transition Recording
+    BotState s_prime; // S_t+1
+    float reward_for_last_transition = 0.0f;
+    bool is_terminal_transition = false;
+
+    // These parameters need to be gathered for getCurrentBotState
+    std::map<int, int> currentWeaponAmmoMap; // Placeholder
+    std::map<int, int> currentWeaponMaxClipMap; // Placeholder
+    int currentWeaponIdVal = 0; // Placeholder
+    if (m_pCurrentWeapon) {
+        currentWeaponIdVal = m_pCurrentWeapon->m_iId;
+        // TODO: Populate ammo maps by iterating m_pWeapons->m_Weapons
+    }
+    float taskCompletionRatio = 0.0f; // Placeholder for path following, etc.
+
+    if (!m_firstThinkCycle && m_pEdict) {
+        s_prime = m_rlHelper.getCurrentBotState(
+            m_pEdict,
+            m_currentObjectiveFocusID,
+            m_focusObjectiveLocation,
+            m_hasFocusObjectiveLocation,
+            m_perceivedPlayerAggression,
+            m_perceivedPlayerCooperation,
+            m_timeSinceLastDamageTaken,
+            (m_pEdict->v.flags & FL_ONGROUND) != 0,
+            isUnderWater(),
+            (m_pEdict->v.flags & FL_ONLADDER) != 0,
+            currentWeaponAmmoMap,
+            currentWeaponMaxClipMap,
+            currentWeaponIdVal,
+            taskCompletionRatio
+        );
+
+        reward_for_last_transition = m_rlHelper.getAccumulatedRewardAndReset();
+        if (!isAlive()) { // If bot died this cycle
+            is_terminal_transition = true;
+        }
+
+        RLTransition transition = {m_previousState, m_lastAction, reward_for_last_transition, s_prime, is_terminal_transition};
+        m_replayBuffer.addTransition(transition); // Assuming m_replayBuffer is the member for RCBotReplayBuffer
+    }
+
+	// (Existing schedule, utility, enemy handling code determines m_chosenAIActionThisFrame)
+	// ... (lots of code here) ...
 	if (m_pEnemy.Get() != nullptr)
 	{
 		edict_t* pEnemy = m_pEnemy.Get();
@@ -195,257 +287,65 @@ void RCBotBase::Think()
 		}
 	}
 
-	m_pVisibles->tasks(m_pProfile->getVisRevs());
+	m_pVisibles->tasks(m_pProfile->getVisRevs()); // This might change m_pEnemy (e.g. newVisible, lostVisible)
+    // m_chosenAIActionThisFrame should be set by the above AI logic based on current state.
 
-	// --- Curiosity System ---
-	// 1. Decay existing scores
-	m_curiosityScore *= CURIOSITY_DECAY_RATE;
-	for (auto it = m_itemCuriosity.begin(); it != m_itemCuriosity.end(); /* no increment */) {
-		it->second *= ITEM_CURIOSITY_DECAY_RATE;
-		if (it->second < 0.01f) { // Threshold to remove very small scores
-			it = m_itemCuriosity.erase(it);
-		} else {
-			++it;
+	// Handle Damage Dealt Reward - AFTER m_pEnemy is determined for this frame.
+	edict_t* currentEnemyEdict = m_pEnemy.Get();
+	if (currentEnemyEdict && currentEnemyEdict->v.health > 0 && isEnemy(currentEnemyEdict) )
+	{
+		if (m_pLastEnemy.Get() != currentEnemyEdict)
+		{
+			m_pLastEnemy.Set(currentEnemyEdict);
+			m_lastEnemyHealth = currentEnemyEdict->v.health;
 		}
-	}
+		else
+		{
+			if (currentEnemyEdict->v.health < m_lastEnemyHealth)
+			{
+				float damageDealt = m_lastEnemyHealth - currentEnemyEdict->v.health;
+				bool isFacingEnemy = inViewCone(currentEnemyEdict->v.origin); // Check if bot is looking towards enemy
 
-	// 2. Detect new entities
-	// Assuming m_pVisibles stores currently visible entities.
-	// The actual structure of RCBotVisibles and how to iterate it would be needed.
-	// This is a conceptual placeholder for iterating visible entities.
-	if (m_pVisibles) {
-		// Let's assume m_pVisibles has a way to get a list of edict_t*
-		// This is hypothetical based on typical bot structure.
-		// Replace with actual way to iterate visibles from RCBotVisibles class.
-		// for (const auto& visible_entity_ptr : m_pVisibles->getVisibleEntities()) {
-		//    if(visible_entity_ptr) {
-		//        const char* classname = STRING(visible_entity_ptr->v.classname);
-		//        std::string classNameStr(classname);
-		//        if (!classNameStr.empty() && m_encounteredEntityClasses.find(classNameStr) == m_encounteredEntityClasses.end()) {
-		//            m_encounteredEntityClasses.insert(classNameStr);
-		//            m_curiosityScore += NEW_ENTITY_BONUS;
-		//            m_itemCuriosity[classNameStr] = NEW_ENTITY_BONUS; // Or some other value
-		//            // SERVER_PRINT( "RCBot %s: New entity encountered: %s\n", STRING(m_pEdict->v.netname), classname);
-		//        }
-		//    }
-		// }
-		// Given current structure, newVisible/lostVisible might be better integration points,
-		// but for a general "scan for novelty", iterating all known nearby entities is an option.
-		// For now, let's simulate seeing one new item for testing if m_pEnemy is new
-		if (m_pEnemy.Get() != nullptr) {
-			const char* classname = STRING(m_pEnemy.Get()->v.classname);
-			std::string classNameStr(classname);
-			if(!classNameStr.empty() && classNameStr != "player" && m_encounteredEntityClasses.find(classNameStr) == m_encounteredEntityClasses.end()){
-				m_encounteredEntityClasses.insert(classNameStr);
-				m_curiosityScore += NEW_ENTITY_BONUS;
-				m_itemCuriosity[classNameStr] = NEW_ENTITY_BONUS;
-				// SERVER_PRINT( "RCBot %s: New enemy entity type encountered: %s, curiosity: %f\n", STRING(m_pEdict->v.netname), classname, m_curiosityScore);
-			}
-		}
-	}
-
-	// 3. Detect new areas (waypoints)
-	if (gRCBotNavigatorNodes && m_pEdict) {
-		PathNode* nearestNode = gRCBotNavigatorNodes->Nearest(m_pEdict->v.origin, 500.0f, false); // Max distance 500 units
-		if (nearestNode) {
-			int waypointId = nearestNode->iId; // Assuming iId is the unique ID for the waypoint
-			if (m_visitedWaypoints.find(waypointId) == m_visitedWaypoints.end()) {
-				m_visitedWaypoints.insert(waypointId);
-				m_curiosityScore += NEW_AREA_BONUS;
-				m_itemCuriosity["waypoint_" + std::to_string(waypointId)] = NEW_AREA_BONUS;
-				// SERVER_PRINT( "RCBot %s: New area (waypoint %d) discovered, curiosity: %f\n", STRING(m_pEdict->v.netname), waypointId, m_curiosityScore);
-			}
-		}
-	}
-	// --- End Curiosity System ---
-
-	// --- Objective Interest System ---
-	// 1. Decay existing objective interests
-	for (auto it = m_objectiveInterests.begin(); it != m_objectiveInterests.end(); /* no increment */) {
-		it->second *= INTEREST_DECAY_RATE;
-		if (it->second < 0.01f) { // Threshold to remove very small interest scores
-			it = m_objectiveInterests.erase(it);
-		} else {
-			++it;
-		}
-	}
-
-	// 2. Link Curiosity to Interest (Generate/Boost Objectives from Novelty)
-	for (const auto& pair : m_itemCuriosity) {
-		if (pair.second > CURIOSITY_TO_INTEREST_THRESHOLD) {
-			std::string objectiveKey = "investigate_" + pair.first; // e.g., "investigate_item_medkit", "investigate_waypoint_32"
-			if (m_objectiveInterests.find(objectiveKey) == m_objectiveInterests.end()) {
-				m_objectiveInterests[objectiveKey] = INITIAL_OBJECTIVE_INTEREST;
-				// SERVER_PRINT("RCBot %s: New objective from curiosity: %s\n", STRING(m_pEdict->v.netname), objectiveKey.c_str());
-			} else {
-				// Boost existing interest if it was already there but perhaps decayed
-				m_objectiveInterests[objectiveKey] += INITIAL_OBJECTIVE_INTEREST * 0.5f; // Smaller boost for existing
-			}
-		}
-	}
-
-	// 3. Basic Objective Selection (Placeholder)
-	float maxInterest = 0.0f;
-	std::string bestObjective = "";
-	if (!m_objectiveInterests.empty()) {
-		for (const auto& pair : m_objectiveInterests) {
-			if (pair.second > maxInterest) {
-				maxInterest = pair.second;
-				bestObjective = pair.first;
-			}
-		}
-		if (!bestObjective.empty() && bestObjective != m_currentFocusObjective) {
-			m_currentFocusObjective = bestObjective;
-			// UTIL_ServerPrintf("RCBot %s: New focus objective: %s (Interest: %f)\n", STRING(m_pEdict->v.netname), m_currentFocusObjective.c_str(), maxInterest);
-
-			// New objective set, reset shaping variables and try to find location
-			m_previousDistanceToFocusObjective = -1.0f;
-			m_hasFocusObjectiveLocation = false;
-			m_focusObjectiveLocation = Vector(0,0,0); // Reset location
-
-			const std::string& objective_key = m_currentFocusObjective;
-			static const std::string waypoint_prefix = "investigate_waypoint_";
-
-			if (objective_key.rfind(waypoint_prefix, 0) == 0) { // Check prefix
-				std::string waypoint_id_str = objective_key.substr(waypoint_prefix.length());
-				try {
-					int waypoint_id = std::stoi(waypoint_id_str);
-					if (gRCBotNavigatorNodes) {
-						// Iterate m_UsedNodes to find by ID (assuming ID is index)
-                        // A more direct gRCBotNavigatorNodes->getNodeById(waypoint_id) would be better.
-                        RCBotNavigatorNode* targetNode = nullptr;
-                        for(RCBotNavigatorNode* pNode : gRCBotNavigatorNodes->getUsedNodes()) { // Use getter for m_UsedNodes
-                            if(pNode && pNode->getIndex() == waypoint_id && pNode->isUsed()) {
-                                targetNode = pNode;
-                                break;
-                            }
-                        }
-
-						if (targetNode) {
-							m_focusObjectiveLocation = targetNode->getOrigin();
-							m_hasFocusObjectiveLocation = true;
-							if (m_pEdict) { // Ensure edict is valid before accessing origin
-							    m_previousDistanceToFocusObjective = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
-                                // UTIL_ServerPrintf("RCBot %s: Objective location SET for %s at (%.1f, %.1f, %.1f), initial dist: %.1f\n",
-                                //     STRING(m_pEdict->v.netname), objective_key.c_str(),
-                                //     m_focusObjectiveLocation.x, m_focusObjectiveLocation.y, m_focusObjectiveLocation.z,
-                                //     m_previousDistanceToFocusObjective);
-                            } else {  m_hasFocusObjectiveLocation = false; }
-						} else {
-                            // UTIL_ServerPrintf("RCBot %s: Waypoint ID %d not found or not used for objective %s.\n", STRING(m_pEdict->v.netname), waypoint_id, objective_key.c_str());
-                            m_hasFocusObjectiveLocation = false;
-                        }
-					} else { m_hasFocusObjectiveLocation = false; }
-				} catch (const std::invalid_argument& ia) {
-					// UTIL_ServerPrintf("RCBot %s: Invalid argument for waypoint ID in %s.\n", STRING(m_pEdict->v.netname), objective_key.c_str());
-					m_hasFocusObjectiveLocation = false;
-				} catch (const std::out_of_range& oor) {
-					// UTIL_ServerPrintf("RCBot %s: Out of range for waypoint ID in %s.\n", STRING(m_pEdict->v.netname), objective_key.c_str());
-					m_hasFocusObjectiveLocation = false;
+				if (damageDealt > 0 && isFacingEnemy)
+				{
+					m_rlHelper.addReward(damageDealt * RCBotRLHelper::RLConsts::REWARD_DAMAGE_DEALT, false);
 				}
-			} else {
-				m_hasFocusObjectiveLocation = false; // Not a waypoint objective we can parse for location
+			}
+			m_lastEnemyHealth = currentEnemyEdict->v.health;
+		}
+	}
+	else // No current valid enemy, or current enemy is dead. Check if we damaged a non-enemy.
+	{
+		// This part needs to be careful. If m_pEnemy is null, we might have shot something else.
+		// A more robust friendly fire detection would occur if the game provides an event hook for "player A damaged player B".
+		// Here, we only check if our *previous* target (m_pLastEnemy) took damage AND was not an enemy.
+		edict_t* lastTrackedEntity = m_pLastEnemy.Get();
+		if (lastTrackedEntity && lastTrackedEntity != currentEnemyEdict && lastTrackedEntity->v.health < m_lastEnemyHealth)
+		{
+			// Previous target (m_pLastEnemy) took damage, and it's NOT our current target (which is null or different)
+			if (!isEnemy(lastTrackedEntity) && lastTrackedEntity != m_pEdict) // Check if it was a non-enemy and not self
+			{
+				float damageToNonEnemy = m_lastEnemyHealth - lastTrackedEntity->v.health;
+				if (damageToNonEnemy > 0)
+				{
+					m_rlHelper.addReward(damageToNonEnemy * RCBotRLHelper::RLConsts::PENALTY_FRIENDLY_FIRE, false);
+				}
 			}
 		}
-	} else { // No objectives currently
-        if (!m_currentFocusObjective.empty()){
-            // UTIL_ServerPrintf("RCBot %s: No objectives, clearing focus: %s\n", STRING(m_pEdict->v.netname), m_currentFocusObjective.c_str());
-            m_currentFocusObjective = "";
-			m_hasFocusObjectiveLocation = false;
-			m_previousDistanceToFocusObjective = -1.0f;
-        }
-    }
 
-	// --- Reward Shaping Logic ---
-	if (m_hasFocusObjectiveLocation && !m_currentFocusObjective.empty() && m_pEdict) {
-		float currentDistance = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
-		if (m_previousDistanceToFocusObjective > 0) { // Was set properly
-			float distanceDelta = m_previousDistanceToFocusObjective - currentDistance;
-			if (distanceDelta > SIGNIFICANT_PROGRESS_THRESHOLD) {
-				float reward = distanceDelta * SHAPING_REWARD_MULTIPLIER;
-				m_curiosityScore += reward; // Add to general curiosity for now
-				// m_shapingRewardAccumulator += reward; // Or use an accumulator
-
-				if (m_objectiveInterests.count(m_currentFocusObjective)) {
-                     m_objectiveInterests[m_currentFocusObjective] += reward * INTEREST_BOOST_FROM_SHAPING_FACTOR;
-                }
-				// UTIL_ServerPrintf("Bot %s made progress (%.2f units) towards %s, reward %.3f. Curiosity: %.2f. Objective Interest: %.2f\n",
-                //     STRING(m_pEdict->v.netname), distanceDelta, m_currentFocusObjective.c_str(), reward, m_curiosityScore,
-                //     m_objectiveInterests.count(m_currentFocusObjective) ? m_objectiveInterests[m_currentFocusObjective] : 0.0f);
-			}
+		if (m_pLastEnemy.Get() && m_pLastEnemy.Get()->v.health <= 0 && m_lastEnemyHealth > 0)
+		{
+			// Enemy was alive in the previous frame (tracked by m_pLastEnemy) and now is dead.
+			// Award for the final damage dealt if it was indeed an enemy.
+            if(isEnemy(m_pLastEnemy.Get())) { // Ensure this kill reward is for an actual enemy
+			    float damageDealtOnKill = m_lastEnemyHealth; // The health it had before this killing blow frame.
+			    m_rlHelper.addReward(damageDealtOnKill * RCBotRLHelper::RLConsts::REWARD_DAMAGE_DEALT, false);
+			    m_rlHelper.addReward(RCBotRLHelper::RLConsts::REWARD_KILL_CONFIRMED, false);
+            }
 		}
-		m_previousDistanceToFocusObjective = currentDistance;
+		m_pLastEnemy.Set(nullptr);
+		m_lastEnemyHealth = 0.0f;
 	}
-	// --- End Reward Shaping ---
-
-	// 4. Conceptual: How m_currentFocusObjective would influence behavior
-	// This would be integrated into the bot's decision-making for tasks, movement, etc.
-	// For example:
-	// if (!m_currentFocusObjective.empty()) {
-	//     if (m_currentFocusObjective.rfind("investigate_waypoint_", 0) == 0) {
-	//         // Extract waypoint ID and set as a movement goal
-	//         // std::string wp_id_str = m_currentFocusObjective.substr(std::string("investigate_waypoint_").length());
-	//         // int wp_id = std::stoi(wp_id_str);
-	//         // PathNode* targetNode = gRCBotNavigatorNodes->GetNode(wp_id);
-	//         // if (targetNode) setMoveTo(targetNode->v_origin, /* priority */);
-	//     } else if (m_currentFocusObjective.rfind("investigate_", 0) == 0) {
-	//         // Logic to find and move towards entities of a certain class, or a specific known new entity.
-	//     }
-	//		// else if (m_currentFocusObjective == "main_mission_objective") { ... }
-	// } else {
-	//     // Default behavior if no specific focus, e.g., patrol, standard combat.
-	// }
-	// --- End Objective Interest System ---
-
-    // --- Entity Interaction Novelty (Bump) ---
-    if (m_pEdict && !FNullEnt(m_pEdict->v.touch)) {
-        edict_t* pTouchedEntity = m_pEdict->v.touch;
-        if (pTouchedEntity != m_pEdict && pTouchedEntity->v.solid != SOLID_BSP) { // Don't process for world or self
-            processEntityInteractionNovelty(pTouchedEntity, "bumped_into");
-        }
-        // Clear touch after processing, though engine might do this.
-        // pev->touch = nullptr;
-    }
-
-
-	// --- Player Perception Decay ---
-	m_perceivedPlayerAggression = m_perceivedPlayerAggression * PERCEPTION_DECAY_RATE + PERCEPTION_BASELINE * (1.0f - PERCEPTION_DECAY_RATE);
-	m_perceivedPlayerCooperation = m_perceivedPlayerCooperation * PERCEPTION_DECAY_RATE + PERCEPTION_BASELINE * (1.0f - PERCEPTION_DECAY_RATE);
-	// Clamp to ensure they stay within [0,1] after decay if necessary, though decay to baseline should handle this.
-    m_perceivedPlayerAggression = std::max(0.0f, std::min(1.0f, m_perceivedPlayerAggression));
-    m_perceivedPlayerCooperation = std::max(0.0f, std::min(1.0f, m_perceivedPlayerCooperation));
-
-
-	// Placeholder for opportunistic chat
-	// This is a very simple trigger, e.g., a small chance per Think cycle.
-	// A more sophisticated system would tie chats to specific game events (kills, deaths, objectives, etc.)
-	if (RANDOM_LONG(0, 2000) < 2 && isAlive()) { // Reduced chance: 0.1% per Think frame
-		// For now, use a generic context. This would be more specific in a real system.
-		// sayChat("generic_event");
-	}
-
-    // Periodically evaluate persona
-    m_timeSinceLastPersonaEvaluation += gpGlobals->frametime;
-    if (m_timeSinceLastPersonaEvaluation > 5.0f) { // Evaluate every 5 seconds
-        evaluateAndAdjustPersona();
-        m_timeSinceLastPersonaEvaluation = 0.0f;
-    }
-
-	// --- Behavioral Adjustment Placeholders ---
-	// if (m_lastInteractingPlayerEdict.Get() && m_perceivedPlayerAggression > 0.7f) {
-	//     // TODO: Increase likelihood of targeting m_lastInteractingPlayerEdict.Get()
-	//     // TODO: Maybe use more aggressive chat responses if talking about this player
-	//		   UTIL_ServerPrintf("Bot %s is feeling aggressive towards %s!\n", STRING(m_pEdict->v.netname), STRING(m_lastInteractingPlayerEdict.Get()->v.netname));
-	// }
-	// if (m_perceivedPlayerCooperation > 0.7f) {
-	//     // TODO: Increase likelihood of following/supporting players
-	//     // TODO: Bias towards more positive/supportive chat
-	//     if(m_lastInteractingPlayerEdict.Get())
-	//		   UTIL_ServerPrintf("Bot %s is feeling cooperative towards %s!\n", STRING(m_pEdict->v.netname), STRING(m_lastInteractingPlayerEdict.Get()->v.netname));
-	//     else
-	//         UTIL_ServerPrintf("Bot %s is feeling generally cooperative!\n", STRING(m_pEdict->v.netname));
-	// }
-
 
 	if (m_pSchedule != nullptr)
 	{
@@ -480,6 +380,77 @@ void RCBotBase::Think()
 			}
 		}
 	}
+
+    // Update last known health at the end of think cycle, before movement
+    if (m_pEdict) {
+        m_lastThinkHealth = m_pEdict->v.health;
+    }
+    // m_timeSinceLastDamageTaken should be incremented elsewhere, e.g. at start of Think if no damage taken this frame.
+    // For now, it's reset on damage, and would need another place to increment.
+
+    // Sentiment-based influence on chosen action (simple version)
+    if (isAlive() && m_pEdict) {
+        if (m_pEnemy.Get() != nullptr) { // Only consider if has an enemy
+            if (m_perceivedPlayerAggression > 0.75f && m_perceivedPlayerCooperation < 0.25f) {
+                // If perceiving high aggression and low cooperation
+                if (m_pEnemy.Get() == m_lastInteractingPlayerEdict.Get()) {
+                    // Bias is stronger if current enemy is the source of recent negative sentiment
+                    m_chosenAIActionThisFrame = BotActionType::TACTIC_ENGAGE_ENEMY;
+                } else if (m_chosenAIActionThisFrame != BotActionType::TACTIC_RETREAT_OR_FALLBACK &&
+                           m_chosenAIActionThisFrame != BotActionType::TACTIC_PURSUE_OBJECTIVE) { // Don't override critical objective or retreat
+                    // If general aggression is high due to other interactions, still slightly bias to engage current target
+                    // unless already retreating or focusing on an objective.
+                    // This avoids making the bot overly aggressive if it's just generally "angry" but current situation is neutral.
+                    // For a more direct general aggression: check m_perceivedPlayerAggression without m_lastInteractingPlayerEdict context.
+                    // However, the current m_perceivedPlayerAggression is updated by last interaction, so it carries some context.
+                    // A more nuanced model would have general mood vs specific player sentiment.
+                    // For now, this simplified check is okay.
+                     if (RANDOM_FLOAT(0.0f, 1.0f) < 0.3f) { // Add some randomness to not always override
+                         m_chosenAIActionThisFrame = BotActionType::TACTIC_ENGAGE_ENEMY;
+                     }
+                }
+            }
+            // No direct override for cooperative perception in this simplified version,
+            // as it's harder to define a universally "less aggressive" action without more context.
+            // It would better influence utility scores for choosing less risky actions.
+        }
+        // Decay general perception scores slightly over time if no new interactions
+        // This should ideally happen if m_lastInteractingPlayerEdict is not recent, or no interaction for a while.
+        // For simplicity, a slow decay each think cycle if not actively interacting with that specific player.
+        if (m_lastInteractingPlayerEdict.Get() == nullptr || gpGlobals->time - m_chatContextMemory.getLastPlayerInteractionTime(m_lastInteractingPlayerEdict.Get()) > 15.0f) {
+             m_perceivedPlayerAggression = std::max(PERCEPTION_BASELINE, m_perceivedPlayerAggression * PERCEPTION_DECAY_RATE);
+             m_perceivedPlayerCooperation = std::max(PERCEPTION_BASELINE, m_perceivedPlayerCooperation * PERCEPTION_DECAY_RATE);
+        }
+
+    }
+
+    // After AI logic has set m_chosenAIActionThisFrame for the current state (m_previousState if !m_firstThinkCycle, or freshly computed state if m_firstThinkCycle)
+    m_lastAction = m_chosenAIActionThisFrame;
+
+    if (m_firstThinkCycle && m_pEdict) {
+        m_previousState = m_rlHelper.getCurrentBotState( /* Same params as above */
+            m_pEdict,
+            m_currentObjectiveFocusID,
+            m_focusObjectiveLocation,
+            m_hasFocusObjectiveLocation,
+            m_perceivedPlayerAggression,
+            m_perceivedPlayerCooperation,
+            m_timeSinceLastDamageTaken,
+            (m_pEdict->v.flags & FL_ONGROUND) != 0,
+            isUnderWater(),
+            (m_pEdict->v.flags & FL_ONLADDER) != 0,
+            currentWeaponAmmoMap,
+            currentWeaponMaxClipMap,
+            currentWeaponIdVal,
+            taskCompletionRatio
+        );
+        m_firstThinkCycle = false;
+    } else if (m_pEdict) { // ensure s_prime was computed if !m_firstThinkCycle
+        m_previousState = s_prime;
+    } else {
+        // If no edict (e.g. bot not fully spawned), reset firstThinkCycle to try init again
+        m_firstThinkCycle = true;
+    }
 }
 
 #define BOT_MOVE_TO_MIN_DISTANCE 16.0f
@@ -610,85 +581,6 @@ void RCBotBase::RunPlayerMove()
 
 }
 
-void RCBotBase::recordGameEvent(const GameEvent& event) {
-    m_shortTermMemory.addEvent(event);
-
-    // Also add to the unified chat context memory
-    // Apply filtering here if only certain game events are relevant for chat context
-    ContextualItem contextItem(event);
-    m_chatContextMemory.addItem(contextItem);
-
-    // --- RL Reward Calculation from Game Events ---
-    // This is a basic example. More sophisticated reward logic would be needed.
-    if (event.type == GameEventType::DAMAGE_EVENT) {
-        // This interpretation depends on how GameEvents for damage are created and what they signify.
-        // Let's assume if damageAmount > 0, it's damage *taken* by this bot,
-        // and attacker_info_str holds the attacker's classname or name.
-        if (event.damageAmount > 0 && m_pEdict) { // Bot took damage
-            m_accumulatedRewardSinceLastTransition -= event.damageAmount * 0.02f; // Penalty for taking damage
-
-            // Try to find the attacker edict based on attacker_info_str
-            // This is a simplification; a direct edict_t* would be better if available when event is created.
-            edict_t* pAttacker = nullptr;
-            if (!event.attacker_info_str.empty() && event.attacker_info_str != "world") {
-                 // Try to find player by name (if attacker_info_str is a name)
-                 // This is a very basic lookup, might not always work or be efficient.
-                for (int i = 1; i <= gpGlobals->maxClients; i++) {
-                    edict_t* pPlayer = INDEXENT(i);
-                    if (pPlayer && !pPlayer->free && STRING(pPlayer->v.netname) && event.attacker_info_str == STRING(pPlayer->v.netname)) {
-                        pAttacker = pPlayer;
-                        break;
-                    }
-                }
-                // If not found as player, could check other entities by classname, but that's more complex.
-                // For now, if pAttacker is found:
-                if (pAttacker && pAttacker != m_pEdict) {
-                     processEntityInteractionNovelty(pAttacker, "damaged_me");
-                } else if (!pAttacker && event.attacker_info_str != "nullptr" && !event.attacker_info_str.empty()) {
-                    // Could attempt to find non-player entity by classname if that's what attacker_info_str is
-                    // For now, if not a known player, we can't easily get an edict_t* from just a classname string here.
-                    // One could also pass the edict_t* of the attacker to recordGameEvent if available at source.
-                }
-            }
-        }
-        // Conceptual: if (event.damageDealtToOther > 0) { // Bot dealt damage
-        //    m_accumulatedRewardSinceLastTransition += event.damageDealtToOther * 0.01f;
-        //    if (target_edict) processEntityInteractionNovelty(target_edict, "damaged_other");
-        // }
-
-    } else if (event.type == GameEventType::HEAR_SOUND_EVENT) {
-        // Assuming target_info_str might hold the entity classname that made the sound,
-        // and attacker_info_str could be its name or index if parsable.
-        // This is very speculative without knowing how HEAR_SOUND_EVENT is populated.
-        // If we can get an edict_t* for the sound source:
-        // edict_t* pSoundSource = ... get from event ...
-        // if (pSoundSource && pSoundSource != m_pEdict) {
-        //    processEntityInteractionNovelty(pSoundSource, "heard_sound_from");
-        // }
-    }
-    // else if (event.type == GameEventType::KILL_EVENT_BY_BOT) {
-    //    m_accumulatedRewardSinceLastTransition += 1.0f;
-    // }
-    // else if (event.type == GameEventType::DEATH_EVENT_OF_BOT) {
-    //    m_accumulatedRewardSinceLastTransition -= 1.0f;
-    // }
-}
-
-// Example of where to call recordGameEvent:
-// void RCBotBase::OnTakeDamage(float damageAmount, edict_t* attacker) {
-//     // Assuming GameEvent has a constructor for damage events:
-//     // GameEvent event(DAMAGE_EVENT, gpGlobals->time, damageAmount);
-//     // recordGameEvent(event);
-//     // ... other damage handling
-// }
-
-// void RCBotBase::OnHearSound(Vector soundOrigin, float volume) {
-//     // Assuming GameEvent has a constructor for sound events:
-//     // GameEvent event(HEAR_SOUND_EVENT, gpGlobals->time, soundOrigin, volume);
-//     // recordGameEvent(event);
-//     // ... other sound handling
-// }
-
 void RCBotBase::setProfile(RCBotProfile* profile)
 {
 	m_pProfile = profile;
@@ -808,130 +700,84 @@ float RCBotBase::distanceFrom(const Vector& vOrigin)
 	return (vOrigin - getViewOrigin()).Length();
 }
 
-void RCBotBase::setLongTermMemory(RCBotLongTermMemory* ltm) {
-    m_pLongTermMemory = ltm;
+
+// --- RL Related Helper Implementations ---
+// BotState RCBotBase::getCurrentBotState() const is now handled by m_rlHelper.getCurrentBotState()
+// void RCBotBase::calculateReward() is now handled by m_rlHelper.addReward()
+
+BotActionType RCBotBase::determineBotAction() const {
+    return m_chosenAIActionThisFrame;
 }
 
-void RCBotBase::consultLongTermMemory() {
-    if (m_pLongTermMemory) {
-        // Example: Retrieve episodes for the current map and print some info
-        // In a real scenario, this would be more targeted based on bot's needs.
-        std::string currentMap = STRING(gpGlobals->mapname);
-        // UTIL_LogPrintf("RCBot %s: Consulting LTM for map %s\n", STRING(m_pEdict->v.netname), currentMap.c_str());
-
-        std::vector<Episode> episodes = m_pLongTermMemory->retrieveEpisodes(currentMap);
-
-        // UTIL_LogPrintf("RCBot %s: Found %d episodes for map %s.\n", STRING(m_pEdict->v.netname), episodes.size(), currentMap.c_str());
-        // For now, just a console print if possible, or internal state change.
-        // Using fprintf for basic debug output here as UTIL_LogPrintf might not be set up or available at all levels.
-        fprintf(stdout, "RCBot %s: Found %lu episodes for map %s.\n", STRING(m_pEdict->v.netname), episodes.size(), currentMap.c_str());
-        for(const auto& ep : episodes) {
-            fprintf(stdout, "  - Episode timestamp: %ld, outcome: %s, events: %lu\n", ep.metadata.timestamp, ep.metadata.outcome.c_str(), ep.events.size());
-        }
-    } else {
-        // UTIL_LogPrintf("RCBot %s: LongTermMemory not available.\n", STRING(m_pEdict->v.netname));
-        fprintf(stdout, "RCBot %s: LongTermMemory not available.\n", STRING(m_pEdict->v.netname));
-    }
-}
-
-/*
-Placeholder for event recording within Think():
-
-void RCBotBase::Think()
+// --- Game Event Recording ---
+void RCBotBase::recordGameEvent(const GameEvent& event)
 {
-    // ... existing Think() logic ...
+    m_shortTermMemory.addEvent(event);
 
-    // Example: Check for damage (this is highly game-specific)
-    // if (m_pEdict->v.health < m_previousHealth) {
-    //     float damageTaken = m_previousHealth - m_pEdict->v.health;
-    //     // Need to identify attacker if possible, or pass nullptr/world
-    //     GameEvent dmgEvent(DAMAGE_EVENT, gpGlobals->time, damageTaken);
-    //     recordGameEvent(dmgEvent);
-    //     m_previousHealth = m_pEdict->v.health;
-    // }
-
-    // Example: Process heard sounds (requires sound detection system)
-    // if (hasHeardSound()) {
-    //     SoundInfo sound = getLatestSound(); // Hypothetical
-    //     GameEvent soundEvent(HEAR_SOUND_EVENT, gpGlobals->time, sound.origin, sound.volume);
-    //     recordGameEvent(soundEvent);
-    // }
-
-    // ... rest of Think() logic ...
-}
-*/
-
-// --- Macro Action System Methods ---
-
-void RCBotBase::loadMacroActions() {
-    m_macroActions.clear(); // Clear any existing macros
-
-    // Example: "strafe_jump_left"
-    // This macro assumes that holding a movement key and jump for one frame is enough.
-    // In reality, jump might need to be held until off the ground, or timed with physics.
-    RCBotMacroAction strafeJumpLeft("strafe_jump_left");
-    strafeJumpLeft.addStep(MacroStep(PRESS_KEY, IN_MOVELEFT)); // Press and hold moveleft
-    strafeJumpLeft.addStep(MacroStep(PRESS_KEY, IN_JUMP));    // Press and hold jump
-    strafeJumpLeft.addStep(MacroStep(WAIT_DURATION, 0.1f));   // Wait a short moment (e.g. for jump to initiate)
-    // Note: RELEASE_KEY steps are conceptual. `RCBotBase::Think` clears buttons each frame.
-    // If a key needs to be "held" across multiple `Think` frames by a macro, the macro's `update`
-    // would need to re-assert `pressButton()` for that key in each of its `update` calls for the duration it's held.
-    // The current `MacroStep` `PRESS_KEY` is treated as "press for this frame".
-    // `RELEASE_KEY` is effectively a no-op unless `RCBotBase` button logic changes.
-    // For simplicity now, assume buttons are cleared by main Think() unless macro re-presses.
-    m_macroActions[strafeJumpLeft.m_name] = strafeJumpLeft;
-
-
-    // Example: "peek_cover_right_quick"
-    // This relies on MOVE_RIGHT_DURATION to continually press IN_MOVERIGHT.
-    RCBotMacroAction peekRight("peek_cover_right_quick");
-    peekRight.addStep(MacroStep(MOVE_RIGHT_DURATION, 0.3f)); // Move right for 0.3s
-    // After 0.3s, the step completes. IN_MOVERIGHT will not be pressed by this macro anymore.
-    m_macroActions[peekRight.m_name] = peekRight;
-
-
-    // Example: "short_forward_burst"
-    RCBotMacroAction forwardBurst("short_forward_burst");
-    forwardBurst.addStep(MacroStep(MOVE_FORWARD_DURATION, 0.5f));
-    m_macroActions[forwardBurst.m_name] = forwardBurst;
-
-
-    // Example: "aim_up_briefly"
-    // This will set the lookAt demand for one frame via SET_AIM_DIRECTION.
-    // Then wait. Regular aiming will take over after the macro finishes.
-    RCBotMacroAction aimUp("aim_up_briefly");
-    aimUp.addStep(MacroStep(SET_AIM_DIRECTION, Vector(0,0,1))); // Vector for looking straight up (world Z axis)
-    aimUp.addStep(MacroStep(WAIT_DURATION, 0.2f));
-    m_macroActions[aimUp.m_name] = aimUp;
-
-    // SERVER_PRINT("RCBot: Loaded %lu macro actions.\n", m_macroActions.size());
+    // Also add to contextual chat/event history
+    if (m_chatContextMemory.getMaxItems() > 0) { // Check if context memory is active
+        ContextualItem context_item;
+        context_item.type = GAME_EVENT_ITEM;
+        context_item.timestamp = event.timestamp;
+        context_item.game_event_data = event; // Copy the event data
+        m_chatContextMemory.addItem(context_item);
+    }
 }
 
-void RCBotBase::startMacroAction(const std::string& name) {
-    auto it = m_macroActions.find(name);
-    if (it != m_macroActions.end()) {
-        if (m_currentMacroAction != nullptr && m_currentMacroAction->m_name != name) {
-            // SERVER_PRINT("RCBot %s: Interrupting macro '%s' to start '%s'.\n", STRING(m_pEdict->v.netname),m_currentMacroAction->m_name.c_str(), name.c_str());
-        } else if (m_currentMacroAction != nullptr && m_currentMacroAction->m_name == name && !m_currentMacroAction->isFinished()) {
-            // SERVER_PRINT("RCBot %s: Macro '%s' already running, restarting.\n", STRING(m_pEdict->v.netname), name.c_str());
+// --- Chat Related Methods ---
+void RCBotBase::sayChat(const std::string& context_trigger) {
+    if (!m_pEdict || !isAlive()) return; // Don't chat if dead or no edict
+
+    // Pass the bot's general perception scores.
+    // If chat were directed at a specific player AND we had per-player sentiment,
+    // we'd retrieve that specific player's perceived aggression/cooperation.
+    // For now, m_perceivedPlayerAggression/Cooperation are general sentiment from last interaction.
+    float target_player_aggression = m_perceivedPlayerAggression;
+    float target_player_cooperation = m_perceivedPlayerCooperation;
+
+    TaggedChatMessage chatMessage = g_ChatManager.generateBotChat(
+        this,
+        context_trigger,
+        &m_chatContextMemory,
+        target_player_aggression,
+        target_player_cooperation
+    );
+
+    if (!chatMessage.message.empty()) {
+        char say_text[256];
+        // Using bot's name in chat:
+        snprintf(say_text, sizeof(say_text), "%s: %s", STRING(m_pEdict->v.netname), chatMessage.message.c_str());
+
+        // Send to all players
+        MESSAGE_BEGIN(MSG_BROADCAST, SVC_SAYTEXT);
+            WRITE_BYTE(ENTINDEX(m_pEdict)); // Entity that is "speaking"
+            WRITE_STRING(say_text);
+        MESSAGE_END();
+
+        // Add bot's own message to its context memory and sent messages deque
+        // Ensure sender_entity_index is set for the bot's own message.
+        TaggedChatMessage bot_sent_message = chatMessage; // Copy
+        if (m_pEdict) {
+            bot_sent_message.sender_entity_index = ENTINDEX(m_pEdict);
+        } else {
+            bot_sent_message.sender_entity_index = 0; // Should not happen if bot is saying something
         }
 
-        m_currentMacroAction = &(it->second);
-        m_currentMacroAction->start();
-        // SERVER_PRINT("RCBot %s: Starting macro action '%s'.\n", STRING(m_pEdict->v.netname), name.c_str());
-    } else {
-        // SERVER_PRINT("RCBot %s: Macro action '%s' not found.\n", STRING(m_pEdict->v.netname), name.c_str());
+        ContextualItem bot_said_item(bot_sent_message);
+        m_chatContextMemory.addItem(bot_said_item);
+
+        m_sentChatMessages.push_back(bot_sent_message);
+        if (m_sentChatMessages.size() > MAX_SENT_CHAT_HISTORY) {
+            m_sentChatMessages.pop_front();
+        }
+
+        // Placeholder: If the chat was a taunt, update m_lastTauntTime
+        if (chatMessage.sentiment == SENTIMENT_TAUNT) {
+            m_lastTauntTime = gpGlobals->time;
+        }
     }
 }
 
-void RCBotBase::stopCurrentMacroAction() {
-    if (m_currentMacroAction) {
-        // SERVER_PRINT("RCBot %s: Stopping macro action '%s'.\n", STRING(m_pEdict->v.netname), m_currentMacroAction->m_name.c_str());
-        m_currentMacroAction = nullptr;
-    }
-}
-
-// --- Persona Methods ---
 void RCBotBase::setPersona(BotPersona persona) {
     m_persona = persona;
 }
@@ -940,264 +786,148 @@ BotPersona RCBotBase::getPersona() const {
     return m_persona;
 }
 
-// --- Chat Methods ---
-void RCBotBase::sayChat(const std::string& context_trigger) {
-    if (!isAlive() || !m_pEdict) { // Don't chat if not alive or no edict
-        return;
-    }
-
-    TaggedChatMessage chatMessage = g_ChatManager.generateBotChat(this, context_trigger, &m_chatContextMemory);
-
-    if (!chatMessage.message.empty()) {
-        // Format: "BotName: Message"
-        // Note: UTIL_SayTextAll prepends [DEAD] if appropriate and handles team chat if the message starts with '(team) '
-        // For general bot chat, we probably don't want team chat by default unless specified by persona/context.
-
-        // Construct the full message string with bot name.
-        // Max message length in GoldSrc is around 127 chars, but varies.
-        // Bot names can be long. Keep chat messages themselves concise.
-        char full_message[256]; // Buffer for full message
-        snprintf(full_message, sizeof(full_message), "%s: %s", STRING(m_pEdict->v.netname), chatMessage.message.c_str());
-
-        // Ensure null termination if message was truncated
-        full_message[sizeof(full_message) - 1] = '\0';
-
-        UTIL_SayTextAll(full_message, m_pEdict); // Pass player edict to attribute message correctly
-
-        // Log the chat with its metadata (optional)
-        // e.g., fprintf(stdout, "CHAT_LOG: [%s] %s (Persona: %d, Sentiment: %d, Time: %.2f)\n",
-        //              STRING(m_pEdict->v.netname),
-        //              chatMessage.message.c_str(),
-        //              chatMessage.persona_at_time_of_sending,
-        //              chatMessage.sentiment,
-        //              chatMessage.timestamp);
-
-        // Store the sent message in bot's own history
-        m_sentChatMessages.push_back(chatMessage);
-        if (m_sentChatMessages.size() > MAX_SENT_CHAT_HISTORY) {
-            m_sentChatMessages.pop_front();
-        }
-
-        // Add bot's own chat to its context memory
-        ContextualItem contextItem(chatMessage);
-        m_chatContextMemory.addItem(contextItem);
-
-        // If it was a taunt, record the time
-        if (chatMessage.sentiment == SENTIMENT_TAUNT) {
-            m_lastTauntTime = gpGlobals->time;
-            m_damageTakenPostTaunt = 0; // Reset damage counter for this new taunt
-        }
-    }
-}
-
 void RCBotBase::evaluateAndAdjustPersona() {
-    // This is a placeholder for more sophisticated logic.
-    // For now, it just provides a hook and a very simple example.
-
-    // Example conceptual logic (currently non-functional without actual metric updates):
-    // if (m_persona == PERSONA_TRASH_TALKER && m_damageTakenPostTaunt > 50) {
-    //    // If trash talking and then taking significant damage, maybe tone it down.
-    //    setPersona(PERSONA_NEUTRAL);
-    //    // SERVER_PRINT("RCBot %s: Persona changed to NEUTRAL due to post-taunt damage.\n", STRING(m_pEdict->v.netname));
-    //    m_damageTakenPostTaunt = 0; // Reset metric
-    //    return;
-    // }
-
-    // if (m_engagementScore < -5.0f) { // Example: if engagement is very low
-    //    BotPersona newPersona = static_cast<BotPersona>(RANDOM_LONG(0, PERSONA_MAX_PERSONAS - 1));
-    //    setPersona(newPersona);
-    //    m_engagementScore = 0; // Reset score
-    //    // SERVER_PRINT("RCBot %s: Low engagement, trying new persona: %d\n", STRING(m_pEdict->v.netname), newPersona);
-    //    return;
-    // }
-
-    // Super simple placeholder: Cycle persona every few evaluations if no other logic changes it.
-    // This is just to demonstrate the mechanism is called.
-    if (RANDOM_LONG(0, 10) < 2) { // 20% chance to cycle persona during an evaluation
-        BotPersona currentPersona = getPersona();
-        BotPersona nextPersona = static_cast<BotPersona>((currentPersona + 1) % PERSONA_MAX_PERSONAS);
-        if (nextPersona == currentPersona && PERSONA_MAX_PERSONAS > 1) { // Ensure it actually changes if possible
-             nextPersona = static_cast<BotPersona>((currentPersona + 2) % PERSONA_MAX_PERSONAS);
-        }
-        if (nextPersona >= PERSONA_MAX_PERSONAS) nextPersona = PERSONA_NEUTRAL; // Safety for modulo with single persona
-
-        setPersona(nextPersona);
-        // SERVER_PRINT("RCBot %s: Periodically changed persona to %d.\n", STRING(m_pEdict->v.netname), nextPersona);
-    }
+    // Placeholder for persona adjustment logic
+    // This could be based on m_engagementScore, m_aggressivenessScore, game outcomes, etc.
+    // For now, let's cycle persona for demonstration if a command is added later.
+    m_timeSinceLastPersonaEvaluation = 0.0f; // Reset timer
 }
 
 void RCBotBase::updatePerceptionFromPlayerChat(edict_t* pPlayerEdict, float chat_sentiment_score) {
-    if (!pPlayerEdict || !m_pEdict) return;
+    if (!pPlayerEdict || pPlayerEdict == m_pEdict) return; // Ignore self or null
 
     m_lastInteractingPlayerEdict.Set(pPlayerEdict);
 
-    if (chat_sentiment_score < -0.1f) { // Negative chat
-        // chat_sentiment_score is negative, so subtracting it increases aggression
-        m_perceivedPlayerAggression -= chat_sentiment_score * SENTIMENT_TO_AGGRESSION_FACTOR;
-        // Adding a negative score decreases cooperation
-        m_perceivedPlayerCooperation += chat_sentiment_score * SENTIMENT_TO_COOPERATION_FACTOR;
-    } else if (chat_sentiment_score > 0.1f) { // Positive chat
-        m_perceivedPlayerCooperation += chat_sentiment_score * SENTIMENT_TO_COOPERATION_FACTOR;
-        // Positive score decreases perceived aggression
-        m_perceivedPlayerAggression -= chat_sentiment_score * SENTIMENT_TO_AGGRESSION_FACTOR;
+    // Simple update: directly influence based on chat sentiment.
+    // More complex: decay old values, consider player history, etc.
+    // Current sentiment_score: positive means cooperative, negative means aggressive (based on SentimentAnalyzer)
+
+    if (chat_sentiment_score > 0) { // Positive sentiment
+        m_perceivedPlayerCooperation += chat_sentiment_score * PERCEPTION_SENTIMENT_TO_COOPERATION_FACTOR; // Use const
+        m_perceivedPlayerAggression -= chat_sentiment_score * PERCEPTION_SENTIMENT_TO_AGGRESSION_FACTOR * 0.5f; // Positive chat reduces perceived aggression
+    } else if (chat_sentiment_score < 0) { // Negative sentiment
+        m_perceivedPlayerAggression += std::abs(chat_sentiment_score) * PERCEPTION_SENTIMENT_TO_AGGRESSION_FACTOR; // Use const
+        m_perceivedPlayerCooperation -= std::abs(chat_sentiment_score) * PERCEPTION_SENTIMENT_TO_COOPERATION_FACTOR * 0.5f; // Negative chat reduces perceived cooperation
     }
 
-    // Clamp values to [0.0, 1.0]
+    // Clamp values to [0, 1]
     m_perceivedPlayerAggression = std::max(0.0f, std::min(1.0f, m_perceivedPlayerAggression));
     m_perceivedPlayerCooperation = std::max(0.0f, std::min(1.0f, m_perceivedPlayerCooperation));
 
-    UTIL_ServerPrintf("Bot %s perception of player %s (after chat score %.2f): Aggro=%.2f, Coop=%.2f\n",
-        STRING(m_pEdict->v.netname),
-        STRING(pPlayerEdict->v.netname),
-        chat_sentiment_score,
-        m_perceivedPlayerAggression,
-        m_perceivedPlayerCooperation);
-}
-
-// --- RL Related Helper Implementations ---
-
-BotState RCBotBase::getCurrentBotState() const {
-    BotState current_s;
-    if (!m_pEdict) return current_s; // Should not happen if bot is active
-
-    current_s.addFeature(m_pEdict->v.health / 100.0f); // Normalize
-    current_s.addFeature(m_pEdict->v.armorvalue / 100.0f); // Normalize
-
-    // Normalize origin and velocity? Depends on map size & max speed. For now, raw.
-    // Consider relative positions if learning general behaviors.
-    current_s.addFeature(m_pEdict->v.origin.x);
-    current_s.addFeature(m_pEdict->v.origin.y);
-    current_s.addFeature(m_pEdict->v.origin.z);
-    current_s.addFeature(m_pEdict->v.velocity.x);
-    current_s.addFeature(m_pEdict->v.velocity.y);
-    current_s.addFeature(m_pEdict->v.velocity.z);
-
-    current_s.addFeature(m_pEnemy.Get() != nullptr && FVisible(m_pEnemy.Get()) ? 1.0f : 0.0f);
-    current_s.addFeature(m_pCurrentWeapon ? static_cast<float>(m_pCurrentWeapon->m_iId) / 30.0f : 0.0f); // Normalize weapon ID (approx max 30)
-    current_s.addFeature(m_pCurrentWeapon ? static_cast<float>(m_pCurrentWeapon->m_iClip) / 50.0f : 0.0f); // Normalize clip (approx max 50, varies wildly)
-
-    current_s.addFeature(m_pEdict->v.button & IN_DUCK ? 1.0f : 0.0f);
-    current_s.addFeature(isUnderWater() ? 1.0f : 0.0f);
-    current_s.addFeature(m_pEdict->v.flags & FL_ONGROUND ? 1.0f : 0.0f);
-
-    return current_s;
-}
-
-BotActionType RCBotBase::determineBotAction() const {
-    if (!m_pEdict) return BotActionType::IDLE;
-    if (m_currentMacroAction != nullptr) {
-        // A more granular mapping from macro name to BotActionType could be done here
-        // For now, just one type for "any macro"
-        if (m_currentMacroAction->m_name == "strafe_jump_left") return BotActionType::USE_MACRO_ACTION_STRAFE_JUMP_LEFT;
-        if (m_currentMacroAction->m_name == "peek_cover_right_quick") return BotActionType::USE_MACRO_ACTION_PEEK_COVER_RIGHT;
-        // Fallback for other macros, or add more specific enum entries
-        return BotActionType::USE_MACRO_ACTION_STRAFE_JUMP_LEFT;
-    }
-
-    if (m_pEdict->v.button & IN_ATTACK) return BotActionType::PRIMARY_ATTACK;
-    if (m_pEdict->v.button & IN_ATTACK2) return BotActionType::SECONDARY_ATTACK;
-    if (m_pEdict->v.button & IN_RELOAD) return BotActionType::RELOAD;
-    if (m_pEdict->v.button & IN_JUMP) return BotActionType::JUMP;
-    if (m_pEdict->v.button & IN_DUCK) return BotActionType::DUCK; // Changed to DUCK from state
-    if (m_pEdict->v.button & IN_USE) return BotActionType::USE_ITEM;
-
-    // Prioritize movement: if multiple movement buttons, pick one or a combined action type
-    if (m_pEdict->v.button & IN_FORWARD) return BotActionType::MOVE_FORWARD;
-    if (m_pEdict->v.button & IN_BACK) return BotActionType::MOVE_BACKWARD;
-    if (m_pEdict->v.button & IN_MOVELEFT) return BotActionType::MOVE_LEFT;
-    if (m_pEdict->v.button & IN_MOVERIGHT) return BotActionType::MOVE_RIGHT;
-
-    return BotActionType::IDLE;
-}
-
-void RCBotBase::calculateReward() {
-    // This is largely a placeholder as rewards are event-driven or state-change driven.
-    // Some intrinsic rewards (like curiosity or objective progress) are already added elsewhere.
-    // This function could be used for more complex, holistic reward calculation at the end of a frame.
+    // UTIL_ServerPrintf("Bot %s perception of %s: Aggro=%.2f, Coop=%.2f (after chat score %.2f)\n",
+    //    STRING(m_pEdict->v.netname), STRING(pPlayerEdict->v.netname), m_perceivedPlayerAggression, m_perceivedPlayerCooperation, chat_sentiment_score);
 }
 
 
 // --- Non-Visual Entity Interaction Novelty ---
-
-std::vector<float> RCBotBase::extractEntityFeatures(edict_t* pEntity, const std::string& interaction_type) const {
-    std::vector<float> features;
-    if (!pEntity || !m_pEdict) return features;
-
-    // 1. Classname hash (normalized)
-    std::hash<std::string> str_hash;
-    float class_hash = static_cast<float>(str_hash(STRING(pEntity->v.classname)));
-    // Normalize: Assuming hash values can be large, this is a very rough normalization.
-    // A better way might be to map known classnames to IDs and then normalize the ID.
-    features.push_back(static_cast<float>(fmod(class_hash, 1000.0) / 1000.0));
-
-    // 2. Health (normalized 0-1, or -1 if not applicable/unknown)
-    features.push_back(pEntity->v.health > 0 ? pEntity->v.health / 100.0f : -1.0f);
-
-    // 3. Is moving?
-    features.push_back(pEntity->v.velocity.LengthSquared() > 25.0f ? 1.0f : 0.0f); // Threshold for "moving" (5 units/sec)
-
-    // 4. Distance at interaction (normalized)
-    float dist = (pEntity->v.origin - m_pEdict->v.origin).Length();
-    const float MAX_INTERACTION_DIST = 1024.0f; // Example typical max engagement distance
-    features.push_back(std::min(dist, MAX_INTERACTION_DIST) / MAX_INTERACTION_DIST);
-
-    // 5. Interaction type (normalized)
-    float interaction_val = 0.0f;
-    if (interaction_type == "damaged_me") interaction_val = 0.1f;
-    else if (interaction_type == "bumped_into") interaction_val = 0.2f;
-    else if (interaction_type == "heard_sound_from") interaction_val = 0.3f;
-    // ... other types ...
-    else interaction_val = 0.9f; // "other"
-    features.push_back(interaction_val);
-
-    // Example: Add current speed of the bot as a feature of context
-    // features.push_back(m_pEdict->v.velocity.Length() / 320.0f ); // Max speed approx 320
-
-    return features;
-}
-
+// This method is called when a non-visual interaction occurs (e.g. bot bumps into an entity, uses an entity)
+// It's a placeholder for where more specific game event handling would go.
 void RCBotBase::processEntityInteractionNovelty(edict_t* pEntity, const std::string& interaction_type) {
-    if (!pEntity || FNullEnt(pEntity) || pEntity == m_pEdict) return; // Don't process for self or null
+    if (!pEntity || FNullEnt(pEntity) || pEntity == m_pEdict) {
+        return;
+    }
 
     std::vector<float> features = extractEntityFeatures(pEntity, interaction_type);
-    if (features.empty()) return;
+    if (features.empty()) {
+        return;
+    }
 
     float min_distance_sq = std::numeric_limits<float>::max();
-    bool log_was_empty = m_seenEntityFeaturesLog.empty();
-
-    if (!log_was_empty) {
-        for (const auto& logged_features : m_seenEntityFeaturesLog) {
-            if (logged_features.size() != features.size()) continue; // Should not happen if features are consistent
-            float current_distance_sq = 0.0f;
+    if (m_seenEntityFeaturesLog.empty()) {
+        // First interaction of this type, always max novelty.
+        // No need to set min_distance_sq, it remains max.
+    } else {
+        for (const auto& seen_features : m_seenEntityFeaturesLog) {
+            if (seen_features.size() != features.size()) continue; // Should not happen if features are consistent
+            float dist_sq = 0.0f;
             for (size_t i = 0; i < features.size(); ++i) {
-                current_distance_sq += std::pow(features[i] - logged_features[i], 2);
+                dist_sq += std::pow(features[i] - seen_features[i], 2);
             }
-            min_distance_sq = std::min(min_distance_sq, current_distance_sq);
+            if (dist_sq < min_distance_sq) {
+                min_distance_sq = dist_sq;
+            }
         }
     }
 
     float novelty_score = 0.0f;
-    float actual_distance = (log_was_empty || min_distance_sq == std::numeric_limits<float>::max()) ? ENTITY_FEATURE_NOVELTY_THRESHOLD + 0.1f : std::sqrt(min_distance_sq);
+    if (min_distance_sq > ENTITY_FEATURE_NOVELTY_THRESHOLD * ENTITY_FEATURE_NOVELTY_THRESHOLD) { // Compare squared distances
+        novelty_score = sqrt(min_distance_sq) * ENTITY_NOVELTY_REWARD_MULTIPLIER; // Example scoring
+        m_curiosityScore += novelty_score; // Boost general curiosity
 
-    if (actual_distance > ENTITY_FEATURE_NOVELTY_THRESHOLD) {
-        novelty_score = actual_distance; // Use the distance as the novelty score
-        m_curiosityScore += novelty_score * ENTITY_NOVELTY_REWARD_MULTIPLIER;
+        // Add to item-specific curiosity as well
+        std::string entity_id_str = std::string(STRING(pEntity->v.classname)) + "_" + interaction_type;
+        m_itemCuriosity[entity_id_str] = std::min(50.0f, m_itemCuriosity[entity_id_str] + novelty_score * 2.0f); // Higher boost for specific item
 
+        // Log this feature set as seen
         m_seenEntityFeaturesLog.push_back(features);
         if (m_seenEntityFeaturesLog.size() > MAX_SEEN_FEATURES_LOG_SIZE) {
             m_seenEntityFeaturesLog.pop_front();
         }
-        // UTIL_ServerPrintf("Bot %s: Novel entity interaction (%s with %s), novelty: %.2f, new curiosity: %.2f\n",
-        //                   STRING(m_pEdict->v.netname), interaction_type.c_str(), STRING(pEntity->v.classname),
-        //                   novelty_score, m_curiosityScore);
+
+        // UTIL_ServerPrintf("Bot %s: Novel interaction with %s (type: %s). Novelty: %.2f. Curiosity: %.2f\n",
+        //    STRING(m_pEdict->v.netname), STRING(pEntity->v.classname), interaction_type.c_str(), novelty_score, m_curiosityScore);
+
+        // --- START of ADDED LOGIC for Subtask 7.11 ---
+        if (pEntity) { // Ensure pEntity is valid (already checked above, but good practice)
+            std::string actual_classname = STRING(pEntity->v.classname);
+            if (!g_ObjectiveManager.isClassnameGloballyInteresting(actual_classname)) {
+                // It's a novel interaction with an entity type not on our main "interesting" list.
+                // Log it as a dynamic objective candidate based on this interaction.
+                g_ObjectiveManager.discoverObjectiveCandidate(
+                    pEntity,
+                    pEntity->v.origin,
+                    actual_classname,
+                    "interaction_novelty", // New discovery_event_type
+                    pEntity->v.team
+                );
+                // UTIL_ServerPrintf("Bot %s: Novel interaction with unknown type %s (ID: %s), logged as objective candidate.\n",
+                //    STRING(m_pEdict->v.netname), actual_classname.c_str(), g_ObjectiveManager.generateUniqueIDForEntity(pEntity).c_str());
+            }
+        }
+        // --- END of ADDED LOGIC for Subtask 7.11 ---
+
+    } else {
+        // Not novel enough, or seen before.
+        // Could potentially decay m_itemCuriosity for this specific entity_id_str if not interacted with recently.
     }
 }
 
-// Placeholder for where to hook OnTakeDamage
-// This would typically be called by the engine or game DLL when the bot takes damage.
-// void RCBotBase::OnTakeDamage(edict_t* pInflictor, edict_t* pAttacker, float flDamage, int bitsDamageType) {
-//    if (pAttacker && pAttacker != m_pEdict) {
-//        processEntityInteractionNovelty(pAttacker, "damaged_me");
-//        m_accumulatedRewardSinceLastTransition -= flDamage * 0.02f; // Example damage penalty
-//    }
-// }
+// Helper to extract features from an entity for novelty detection
+// This is highly game/mod dependent.
+std::vector<float> RCBotBase::extractEntityFeatures(edict_t* pEntity, const std::string& interaction_type) const {
+    std::vector<float> features;
+    if (!pEntity || FNullEnt(pEntity)) return features;
+
+    // Feature 1: Entity classname (converted to a numerical ID or hash if possible, or one-hot encoded if few types)
+    // For simplicity, let's assume g_ObjectiveManager can provide an ID or we use a local map.
+    // This part is complex to make generic. For now, a placeholder.
+    // features.push_back(static_cast<float>(std::hash<std::string>{}(STRING(pEntity->v.classname)) % 1000) / 1000.0f); // Example hash
+
+    // Feature 2: Interaction type (hash or enum to float)
+    // features.push_back(static_cast<float>(std::hash<std::string>{}(interaction_type) % 100) / 100.0f);
+
+    // Feature 3: Entity health (if applicable, normalized)
+    if (pEntity->v.health > 0) features.push_back(pEntity->v.health / 100.0f); else features.push_back(0.0f);
+
+    // Feature 4: Distance to entity (normalized by some typical interaction range)
+    // float dist = (pEntity->v.origin - m_pEdict->v.origin).Length();
+    // features.push_back(dist / 1000.0f); // Normalize by e.g. 1000 units
+
+    // Feature 5: Relative angle / Facing (dot product)
+    // Vector dirToEntity = (pEntity->v.origin - m_pEdict->v.origin).Normalize();
+    // MAKE_VECTORS(m_pEdict->v.v_angle);
+    // features.push_back((DotProduct(gpGlobals->v_forward, dirToEntity) + 1.0f) / 2.0f); // Normalized to [0,1]
+
+    // For this subtask, the presence of features is more important than their specific content for testing the mechanism.
+    // A very simple feature set:
+    features.push_back(static_cast<float>(pEntity->v.playerclass)); // example, might be 0 for non-players
+    features.push_back(static_cast<float>(pEntity->v.modelindex % 100) / 100.0f); // example based on model
+
+    // The key is that these features, however derived, allow differentiation between interactions.
+    // If all interactions produce the same feature vector, novelty won't be detected.
+    if (features.empty()) { // Ensure some feature is always present if entity is valid
+        features.push_back(1.0f); // Generic feature if others are not applicable
+    }
+
+    return features;
+}

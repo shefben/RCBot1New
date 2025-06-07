@@ -30,3 +30,19 @@ std::vector<ContextualItem> RCBotChatHistory::getContextWindowCopy() const {
 void RCBotChatHistory::clear() {
     m_context_window.clear();
 }
+
+float RCBotChatHistory::getLastPlayerInteractionTime(int player_entity_index) const {
+    // Iterate in reverse (most recent first)
+    for (auto it = m_context_window.rbegin(); it != m_context_window.rend(); ++it) {
+        const ContextualItem& item = *it;
+        if (item.type == ContextItemType::CHAT_MESSAGE) {
+            // Check if the sender_entity_index in the chat_message matches the player_entity_index
+            // This assumes TaggedChatMessage has a field like sender_entity_index.
+            // If ContextualItem itself stores sender info directly for CHAT_MESSAGE type, adjust accordingly.
+            if (item.chat_message.sender_entity_index == player_entity_index) {
+                return item.timestamp; // Return the timestamp of the most recent message from this player
+            }
+        }
+    }
+    return 0.0f; // Return 0.0 if no message from this player is found
+}
