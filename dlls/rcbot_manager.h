@@ -29,6 +29,7 @@ public:
 
 	void OnRoundEnd_Simulated(int winning_team_id); // Simulated round end handler
 	void ProcessPlayerDeathEvent(edict_t* pVictimEdict, edict_t* pAttackerEdict); // Handles player death events
+	void SimulateBombPlantedEvent(edict_t* pBombSiteObjectiveEdict, edict_t* pPlanterEdict); // Simulates a bomb plant
 
 private:
 	RCBotBase* AddBot();

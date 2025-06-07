@@ -25,6 +25,11 @@ namespace RLConsts {
     // Constants for Stuck/Idle detection
     static const float MAX_IDLE_TIME_SECONDS = 10.0f;          // Max duration bot can be idle before penalty
     static const float MIN_MOVEMENT_SPEED_THRESHOLD = 10.0f;   // Velocity magnitude below which bot is considered potentially stuck/idle
+
+    // Shaping Reward Constants
+    static const float REWARD_SHAPING_INTERACT_BUTTON_DOOR = 0.15f;
+    static const float REWARD_SHAPING_PICKUP_ITEM_OBJECTIVE = 0.2f; // If item pickup can be detected
+    static const float SIGNIFICANT_PROGRESS_THRESHOLD_FOR_SHAPING = 1.0f; // Min distance change for distance-based shaping
 }
 
 class RCBotRLHelper {

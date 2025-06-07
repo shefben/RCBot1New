@@ -240,6 +240,10 @@ const std::map<std::string, ObjectiveCandidateMetadata>& DynamicObjectiveManager
     return m_objective_candidates;
 }
 
+std::map<std::string, ObjectiveCandidateMetadata>& DynamicObjectiveManager::getMutableObjectiveCandidates() {
+    return m_objective_candidates;
+}
+
 ObjectiveCandidateMetadata* DynamicObjectiveManager::getObjectiveCandidateById(const std::string& objective_id) {
     auto it = m_objective_candidates.find(objective_id);
     if (it != m_objective_candidates.end()) {

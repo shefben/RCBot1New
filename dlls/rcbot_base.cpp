@@ -355,6 +355,26 @@ void RCBotBase::Think()
     }
     // --- End Dynamic Objective Selection Logic ---
 
+    // --- Distance-Based Shaping Reward for Focused Objective (Dynamic or Intrinsic if location is set) ---
+    if (m_hasFocusObjectiveLocation && !m_currentObjectiveFocusID.empty() && m_pEdict && isAlive()) { // Check isAlive
+        float currentDistance = (m_pEdict->v.origin - m_focusObjectiveLocation).Length();
+        if (m_previousDistanceToFocusObjective > 0) { // Ensure previous distance was valid
+            float distanceDelta = m_previousDistanceToFocusObjective - currentDistance;
+            if (std::abs(distanceDelta) > RLConsts::SIGNIFICANT_PROGRESS_THRESHOLD_FOR_SHAPING) { // Use std::abs for change in either direction
+                // Reward for getting closer, penalize for moving away from a *focused* objective
+                float reward = distanceDelta * RLConsts::REWARD_OBJECTIVE_PROGRESS;
+                m_rlHelper.addReward(reward);
+                // UTIL_ServerPrintf("Bot %s: Shaping reward for distance to obj %s: %.4f (Delta: %.2f)\n",
+                //    STRING(m_pEdict->v.netname), m_currentObjectiveFocusID.c_str(), reward, distanceDelta);
+            }
+        }
+        m_previousDistanceToFocusObjective = currentDistance;
+    } else {
+        // If no focused objective with location, reset previous distance
+        m_previousDistanceToFocusObjective = -1.0f;
+    }
+    // --- End Distance-Based Shaping Reward ---
+
 	// Handle Damage Dealt Reward - AFTER m_pEnemy is determined for this frame.
 	edict_t* currentEnemyEdict = m_pEnemy.Get();
 	if (currentEnemyEdict && currentEnemyEdict->v.health > 0 && isEnemy(currentEnemyEdict) )
@@ -457,6 +477,37 @@ void RCBotBase::Think()
     }
     // m_timeSinceLastDamageTaken should be incremented elsewhere, e.g. at start of Think if no damage taken this frame.
     // For now, it's reset on damage, and would need another place to increment.
+
+    // --- Interaction-Specific Shaping Rewards ---
+    if (m_chosenAIActionThisFrame == BotActionType::TACTIC_PURSUE_DYNAMIC_OBJECTIVE &&
+        !m_currentObjectiveFocusID.empty() && m_pEdict && (m_pEdict->v.button & IN_USE) && isAlive()) {
+
+        ObjectiveCandidateMetadata* focused_obj = g_ObjectiveManager.getObjectiveCandidateById(m_currentObjectiveFocusID);
+        if (focused_obj && focused_obj->is_active) {
+            float distance_to_obj = (focused_obj->location - m_pEdict->v.origin).Length();
+
+            if (distance_to_obj < 64.0f) { // Bot is very close to the objective
+                if (focused_obj->category_tag == ObjectiveCategoryType::BUTTON_ENTITY ||
+                    focused_obj->category_tag == ObjectiveCategoryType::DOOR_ENTITY) {
+
+                    Vector to_obj = (focused_obj->location - getViewOrigin()).Normalize();
+                    MAKE_VECTORS(m_pEdict->v.v_angle);
+                    float dot_product = DotProduct(to_obj, gpGlobals->v_forward);
+
+                    if (dot_product > 0.707) { // Bot is facing within ~45 degrees of objective
+                        m_rlHelper.addReward(RLConsts::REWARD_SHAPING_INTERACT_BUTTON_DOOR);
+                        // UTIL_ServerPrintf("Bot %s got shaping reward for using button/door obj %s\n", STRING(m_pEdict->v.netname), m_currentObjectiveFocusID.c_str());
+                        // TODO: Consider adding a short cooldown for this specific objective interaction reward
+                    }
+                }
+                // Placeholder for item pickup shaping rewards:
+                // else if (focused_obj->category_tag == ObjectiveCategoryType::WEAPON_ITEM && /* some_flag_or_event_indicating_pickup_of_this_item */) {
+                //    m_rlHelper.addReward(RLConsts::REWARD_SHAPING_PICKUP_ITEM_OBJECTIVE);
+                // }
+            }
+        }
+    }
+    // --- End Interaction-Specific Shaping Rewards ---
 
     // Sentiment-based influence on chosen action (simple version)
     if (isAlive() && m_pEdict) {

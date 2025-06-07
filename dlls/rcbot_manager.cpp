@@ -20,6 +20,10 @@ static const float REWARD_VALUE_ROUND_WIN = 1.0f;
 static const float PENALTY_VALUE_ROUND_LOSS = -1.0f;
 static const float REWARD_VALUE_ROUND_DRAW = 0.0f;
 
+// Constants for Bomb Plant Event
+static const float REWARD_BOMB_PLANTED_AT_SITE_TERRORIST = 0.7f;
+static const float PENALTY_BOMB_PLANTED_AT_SITE_CT = -0.7f;
+
 /// <summary>
 /// 
 /// </summary>
@@ -140,6 +144,44 @@ void RCBotManager::Think()
             s_timeSinceLastDeathSim = 0.0f;
         }
     }
+
+    // Simulate Bomb Plant Event for testing
+    static float s_timeSinceLastBombPlantSim = 0.0f;
+    if (gpGlobals) { // Ensure gpGlobals is valid
+        s_timeSinceLastBombPlantSim += gpGlobals->frametime;
+        if (s_timeSinceLastBombPlantSim > 75.0f && !m_Bots.empty()) {
+            RCBotBase* planter_bot = m_Bots[RAND_LONG(0, m_Bots.size()-1)];
+            if (planter_bot && planter_bot->getEdict()) {
+                const auto& objectives = g_ObjectiveManager.getObjectiveCandidates();
+                edict_t* target_site_edict = nullptr;
+
+                for(const auto& pair : objectives) {
+                    if(pair.second.category_tag == ObjectiveCategoryType::BOMB_SITE && pair.second.is_active) {
+                        // Try to find an actual entity matching this objective for the simulation
+                        for (int i = 1; i < gpGlobals->maxEntities; i++) {
+                            edict_t* pCurrentEntity = INDEXENT(i);
+                            if (pCurrentEntity && !pCurrentEntity->free &&
+                                STRING(pCurrentEntity->v.classname) == pair.second.entity_classname &&
+                                (pCurrentEntity->v.origin - pair.second.location).Length() < 10.0f) {
+                                target_site_edict = pCurrentEntity;
+                                break;
+                            }
+                        }
+                        if (target_site_edict) break;
+                    }
+                }
+
+                if (target_site_edict) {
+                    // Simulate planter is Terrorist (team 1) for this example
+                    int old_team = planter_bot->getEdict()->v.team;
+                    planter_bot->getEdict()->v.team = 1;
+                    SimulateBombPlantedEvent(target_site_edict, planter_bot->getEdict());
+                    planter_bot->getEdict()->v.team = old_team; // Restore team
+                }
+            }
+            s_timeSinceLastBombPlantSim = 0.0f;
+        }
+    }
 }
 
 void RCBotManager::OnRoundEnd_Simulated(int winning_team_id) {
@@ -189,9 +231,94 @@ void RCBotManager::OnRoundEnd_Simulated(int winning_team_id) {
         // This is better handled in RCBotBase itself if it needs to react to round end.
     }
 
+    // Update win/loss correlation counters for all objectives active this round
+    if (winning_team_id != 0) { // If not a draw, proceed to update counters
+        for (auto& pair : g_ObjectiveManager.getMutableObjectiveCandidates()) {
+            ObjectiveCandidateMetadata& objective = pair.second;
+            // Consider an objective "active in round" if its is_active is true.
+            // is_active is reset by clearObjectivesOnNewRound after this block,
+            // and updated by decay logic during the round.
+            if (objective.is_active) {
+                // Simplified assumption: winning_team_id 1 is a "win" context, 2 is a "loss" context
+                // from a fixed reference (e.g., if we are tracking stats for "Team 1 objectives")
+                if (winning_team_id == 1) {
+                    objective.rounds_active_in_win++;
+                } else if (winning_team_id == 2) {
+                    objective.rounds_active_in_loss++;
+                }
+            }
+        }
+    }
+
     // This call resets per-round stats for objectives, like interaction counts,
     // and marks them as active for re-evaluation in the new round.
     g_ObjectiveManager.clearObjectivesOnNewRound();
+}
+
+
+void RCBotManager::SimulateBombPlantedEvent(edict_t* pBombSiteObjectiveEdict, edict_t* pPlanterEdict) {
+    if (!pBombSiteObjectiveEdict || !pPlanterEdict || !gpGlobals) {
+        // UTIL_ServerPrintf("SimulateBombPlantedEvent: Invalid edict(s).\n");
+        return;
+    }
+
+    std::string bomb_site_obj_id = g_ObjectiveManager.generateUniqueIDForEntity(pBombSiteObjectiveEdict);
+    ObjectiveCandidateMetadata* bomb_site_meta = g_ObjectiveManager.getObjectiveCandidateById(bomb_site_obj_id);
+
+    if (!bomb_site_meta || !bomb_site_meta->is_active || bomb_site_meta->category_tag != ObjectiveCategoryType::BOMB_SITE) {
+        // UTIL_ServerPrintf("SimulateBombPlantedEvent: Objective %s is not an active bomb site.\n", bomb_site_obj_id.c_str());
+        return;
+    }
+
+    // UTIL_ServerPrintf("SimulateBombPlantedEvent: Bomb planted at %s by player/bot %s (Team %d).\n",
+    //                   bomb_site_obj_id.c_str(), STRING(pPlanterEdict->v.netname), pPlanterEdict->v.team);
+
+    float reward_for_site_objective = 0.0f;
+    int planter_team = pPlanterEdict->v.team; // Assuming team 1 is T, team 2 is CT for CS example
+
+    if (planter_team == 1) { // Terrorist planted
+        reward_for_site_objective = REWARD_BOMB_PLANTED_AT_SITE_TERRORIST;
+    } else {
+        // If a CT "plants", it might mean they are defusing or something else.
+        // For this specific "BombPlanted" event, it's strongly implied T action.
+        // If CTs were to secure a site *before* planting, that'd be a different event.
+        // So, if planter_team is CT for a "BombPlanted" event, this is unusual.
+        // We might give a slight negative or zero, or assume it's a T action regardless of current edict team for simulation.
+        // For this simulation, we'll stick to the idea that this event means T planted.
+        // If pPlanterEdict->v.team was not 1, this reward is effectively ignored or could be negative.
+        // For a more robust system, the event source would clarify the true action.
+        // Let's assume the simulation sets planter_team correctly for T.
+        reward_for_site_objective = REWARD_BOMB_PLANTED_AT_SITE_TERRORIST;
+    }
+
+    // Apply TD update to the bomb site objective itself.
+    // This event (bomb planted) changes the state and value of the bomb site.
+    // The "next state" for the bomb site objective is now "bomb ticking".
+    // We don't have a V(s') for "bomb ticking" yet, so use 0 as explicit next state value for now,
+    // meaning the reward_for_site_objective captures the full value change for this event.
+    // A more advanced model might have V(bomb_ticking_site).
+    g_ObjectiveManager.applyTDUpdate(bomb_site_obj_id, reward_for_site_objective, "", 0.0f, false);
+
+
+    // Now, consider if any BOT was focused on this bomb site as an objective.
+    const auto& active_bots = getActiveBots();
+    for (RCBotBase* bot : active_bots) {
+        if (bot && bot->getEdict() && !bot->m_currentObjectiveFocusID.empty() && bot->m_currentObjectiveFocusID == bomb_site_obj_id) {
+            float bot_specific_reward = 0.0f;
+            if (bot->getEdict()->v.team == planter_team) {
+                bot_specific_reward = REWARD_BOMB_PLANTED_AT_SITE_TERRORIST;
+            } else {
+                bot_specific_reward = PENALTY_BOMB_PLANTED_AT_SITE_CT;
+            }
+            // This is the reward for the bot's interaction (or failure to prevent interaction) with the objective.
+            // The next state for the bot could be "defend planted bomb" or "retake site".
+            // For simplicity, we use an explicit next state value of 0, assuming this reward captures the immediate outcome
+            // of their focus on "plant/prevent plant at this site".
+            g_ObjectiveManager.applyTDUpdate(bot->m_currentObjectiveFocusID, bot_specific_reward, "", 0.0f, false);
+            // UTIL_ServerPrintf("Bot %s (Team %d) focused on %s. Bomb plant event. Bot reward: %.2f\n",
+            //                   STRING(bot->getEdict()->v.netname), bot->getEdict()->v.team, bot->m_currentObjectiveFocusID.c_str(), bot_specific_reward);
+        }
+    }
 }
 
 

@@ -238,15 +238,17 @@ RCBotCommandReturn RCBotCommand_ShowObjectives::execute(edict_t* pClient, const 
 
         count_shown++;
         snprintf(buf, sizeof(buf)-1, "ID: %s\n  Cls: %s, Cat: %s, Loc: (%.0f,%.0f,%.0f), Team: %d\n"
-                                     "  Conf: %.2f, Clst: %d, Act: %s, Seen: %d, Pos: %d, Neg: %d\n"
+                                     "  Conf: %.2f, Clst: %d, Act: %s, Seen: %d\n"
+                                     "  PosOut: %d, NegOut: %d, ActInWin: %d, ActInLoss: %d\n"
                                      "  FirstTS: %.1f, LastTS: %.1f\n",
                  obj.unique_id.c_str(),
                  obj.entity_classname.c_str(),
-                 objectiveCategoryToString(obj.category_tag).c_str(), // Added category
+                 objectiveCategoryToString(obj.category_tag).c_str(),
                  obj.location.x, obj.location.y, obj.location.z,
                  obj.team_ownership, obj.confidence, obj.cluster_id,
                  obj.is_active ? "Y" : "N", obj.times_seen_or_touched,
                  obj.times_interacted_positive_outcome, obj.times_interacted_negative_outcome,
+                 obj.rounds_active_in_win, obj.rounds_active_in_loss, // Added new stats
                  obj.first_seen_timestamp, obj.last_seen_timestamp);
         UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, buf);
     }

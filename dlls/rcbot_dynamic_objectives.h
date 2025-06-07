@@ -74,12 +74,16 @@ struct ObjectiveCandidateMetadata {
     int   cluster_id;             // ID of the cluster this objective belongs to
     ObjectiveCategoryType category_tag; // Category of the objective
 
+    int rounds_active_in_win;     // How many rounds this objective was active when "our" team won
+    int rounds_active_in_loss;    // How many rounds this objective was active when "our" team lost
+
     ObjectiveCandidateMetadata() :
         team_ownership(0), confidence(0.1f),
         times_interacted_positive_outcome(0), times_interacted_negative_outcome(0),
         times_seen_or_touched(0),
         first_seen_timestamp(0.0f), last_seen_timestamp(0.0f), is_active(true),
-        cluster_id(-1), category_tag(ObjectiveCategoryType::UNKNOWN) { // Initialize to -1 (unclustered)
+        cluster_id(-1), category_tag(ObjectiveCategoryType::UNKNOWN),
+        rounds_active_in_win(0), rounds_active_in_loss(0) {
         // location will be zero-initialized by Vector's default constructor
     }
 };
@@ -101,6 +105,7 @@ public:
     void updateObjectiveConfidence(const std::string& objective_id, float change);
 
     const std::map<std::string, ObjectiveCandidateMetadata>& getObjectiveCandidates() const;
+    std::map<std::string, ObjectiveCandidateMetadata>& getMutableObjectiveCandidates(); // Added for updating stats
     ObjectiveCandidateMetadata* getObjectiveCandidateById(const std::string& objective_id); // Non-const version
 
     void clearObjectivesOnNewRound(); // Resets some stats, not full clear (e.g. interaction counts)
