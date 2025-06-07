@@ -57,11 +57,14 @@ BotState RCBotRLHelper::getCurrentBotState(
     float currentTaskCompletionRatio
 ) const {
     BotState current_s;
-    current_s.features.reserve(40);
+    current_s.features.reserve(45); // Increased reserve for new features
 
     if (!pEdict) { // Should ideally not happen if called from an active bot
         // Fill with a default "invalid" state if necessary, maintaining feature vector size
-        for(size_t i = 0; i < 35; ++i) current_s.features.push_back(0.0f); // Adjust size to match feature count
+        // Current feature count before new placeholders:
+        // Basic(2) + Loc(3) + Vel(4) + Status(5) + Ammo(5) + CurWpn(1) + Cooldown(2) + Obj(4) + Percept(2) + Timers(1) + Task(1) = 30
+        // The old opponent section had 6, new one also has 6. Total target ~36.
+        for(size_t i = 0; i < 36; ++i) current_s.features.push_back(0.0f); // Adjust size to match actual feature count
         return current_s;
     }
 
@@ -138,14 +141,25 @@ BotState RCBotRLHelper::getCurrentBotState(
     // 10. Current Task Completion Ratio (Already [0,1])
     current_s.features.push_back(currentTaskCompletionRatio);
 
-    // 11. Opponent Characteristics (Placeholders - assuming no direct enemy info passed for now)
-    // These would ideally come from RCBotBase's enemy tracking, passed into this function
-    current_s.features.push_back(0.0f); // hasEnemy
-    current_s.features.push_back(0.0f); // isEnemyVisible
-    current_s.features.push_back(0.0f); // enemyHealth
-    current_s.features.push_back(0.0f); // enemyRelativePosition.x
-    current_s.features.push_back(0.0f); // enemyRelativePosition.y
-    current_s.features.push_back(0.0f); // enemyRelativePosition.z
+    // 11. Opponent Characteristics (Placeholders - initialized to default/unknown values)
+    // These would be populated by more complex enemy tracking logic in the future.
+
+    // Opponent's last known weapon category (e.g., 0=none, 0.2=pistol, 0.4=smg, 0.6=rifle, 0.8=shotgun, 1.0=sniper)
+    current_s.features.push_back(0.0f); // Placeholder: opponent_last_weapon_category (normalized)
+
+    // Opponent's estimated speed category (e.g., 0=stopped, 0.5=normal, 1.0=fast)
+    current_s.features.push_back(0.0f); // Placeholder: opponent_speed_category (normalized)
+
+    // Distance to nearest known enemy (normalized inverse: 1.0 if very close, 0.0 if far or none known)
+    current_s.features.push_back(0.0f); // Placeholder: norm_dist_to_nearest_enemy
+
+    // Direction to nearest known enemy (x, y, z components - already normalized if from a vector)
+    current_s.features.push_back(0.0f); // Placeholder: norm_dir_to_nearest_enemy_x
+    current_s.features.push_back(0.0f); // Placeholder: norm_dir_to_nearest_enemy_y
+    current_s.features.push_back(0.0f); // Placeholder: norm_dir_to_nearest_enemy_z
+
+    // Optional: A flag indicating if any enemy is currently known/tracked
+    // current_s.features.push_back(0.0f); // Placeholder: is_enemy_tracked
 
     return current_s;
 }
