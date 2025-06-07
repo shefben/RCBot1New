@@ -13,9 +13,12 @@
 #include "rcbot_profile.h"
 #include "rcbot_chat_history.h" // For ContextualItem and RCBotChatHistory
 #include "rcbot_base.h"         // For RCBotBase
-#include "util.h"               // For UTIL_ClientPrint (assuming it's here)
+#include "util.h"               // For UTIL_ClientPrint, UTIL_ServerPrintf etc.
+#include "rcbot_dynamic_objectives.h" // For g_ObjectiveManager
 #include <stdint.h>
 #include <string.h> // For stricmp
+#include <vector>   // For std::vector in ShowObjectives
+#include <iomanip>  // For std::fixed, std::setprecision if printing floats neatly
 
 #define RCBOT_ACCESSORS_FILE "rcbot_accesslevels"
 #define RCBOT_ACCESSORS_FOLDER "accessors"
@@ -181,7 +184,9 @@ RCBotCommands_MainCommand::RCBotCommands_MainCommand() : RCBotCommands("rcbot")
 	addCommand(new RCBotCommands_UtilCommand());
 	addCommand(new RCBotCommands_WaypointCommand());
 	addCommand(new RCBotCommands_PathWaypointCommand());
-	addCommand(new RCBotCommand_ChatContextCommand()); // Add the new command
+	addCommand(new RCBotCommand_ChatContextCommand());
+    addCommand(new RCBotCommand_ShowObjectives());
+    addCommand(new RCBotCommand_ResetObjectives());
 }
 
 RCBotCommands_BotCommand::RCBotCommands_BotCommand() : RCBotCommands("bot")
@@ -194,6 +199,86 @@ RCBotCommandReturn RCBotCommand_AddBotCommand::execute(edict_t* pClient, const c
 	gRCBotManager.IncreaseQuota();
 
 	return RCBotCommandReturn::Ok;
+}
+
+// --- Dynamic Objective Commands ---
+
+RCBotCommand_ShowObjectives::RCBotCommand_ShowObjectives()
+    : RCBotCommand("show_objectives",
+                   "Displays current dynamic objectives. Args: [active|inactive|all] [classname_filter]",
+                   "rcbot show_objectives [active|inactive|all] [classname_filter]") {
+}
+
+RCBotCommandReturn RCBotCommand_ShowObjectives::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) {
+    if (!pClient) {
+        UTIL_ServerPrintf("show_objectives: This command must be issued by a player in-game.\n");
+        return RCBotCommandReturn::Ok;
+    }
+
+    std::string filter_type_str = (arg1 && *arg1) ? arg1 : "active"; // Default to "active"
+    std::string classname_filter_str = (arg2 && *arg2) ? arg2 : "";
+
+    const auto& objectives = g_ObjectiveManager.getObjectiveCandidates();
+    char buf[512]; // Buffer for each line to print
+
+    snprintf(buf, sizeof(buf)-1, "--- Dynamic Objectives (%zu total, Filter: %s, Class: %s) ---\n",
+        objectives.size(), filter_type_str.c_str(), classname_filter_str.empty() ? "any" : classname_filter_str.c_str());
+    UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, buf);
+
+    int count_shown = 0;
+    for (const auto& pair : objectives) {
+        const ObjectiveCandidateMetadata& obj = pair.second;
+
+        if (filter_type_str == "active" && !obj.is_active) continue;
+        if (filter_type_str == "inactive" && obj.is_active) continue;
+
+        if (!classname_filter_str.empty() && obj.entity_classname.find(classname_filter_str) == std::string::npos) {
+            continue;
+        }
+
+        count_shown++;
+        snprintf(buf, sizeof(buf)-1, "ID: %s\n  Cls: %s, Loc: (%.0f,%.0f,%.0f), Team: %d\n"
+                                     "  Conf: %.2f, Clst: %d, Act: %s, Seen: %d, Pos: %d, Neg: %d\n"
+                                     "  FirstTS: %.1f, LastTS: %.1f\n",
+                 obj.unique_id.c_str(), obj.entity_classname.c_str(),
+                 obj.location.x, obj.location.y, obj.location.z,
+                 obj.team_ownership, obj.confidence, obj.cluster_id,
+                 obj.is_active ? "Y" : "N", obj.times_seen_or_touched,
+                 obj.times_interacted_positive_outcome, obj.times_interacted_negative_outcome,
+                 obj.first_seen_timestamp, obj.last_seen_timestamp);
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, buf);
+    }
+
+    if (count_shown == 0) {
+        UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "No objectives match the current filter.\n");
+    }
+    snprintf(buf, sizeof(buf)-1, "--- End of Objectives (Shown: %d) ---\n", count_shown);
+    UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, buf);
+
+    return RCBotCommandReturn::Ok;
+}
+
+RCBotCommand_ResetObjectives::RCBotCommand_ResetObjectives()
+    : RCBotCommand("reset_objectives",
+                   "Resets dynamic objectives. Args: [all|round]",
+                   "rcbot reset_objectives [all|round]") {
+}
+
+RCBotCommandReturn RCBotCommand_ResetObjectives::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) {
+    std::string reset_type = (arg1 && *arg1) ? arg1 : "all"; // Default to "all"
+
+    if (reset_type == "all") {
+        g_ObjectiveManager.clearAllObjectives();
+        if (pClient) UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] All dynamic objectives cleared.\n");
+        else UTIL_ServerPrintf("[RCBot] All dynamic objectives cleared.\n");
+    } else if (reset_type == "round") {
+        g_ObjectiveManager.clearObjectivesOnNewRound();
+        if (pClient) UTIL_ClientPrint(pClient, HUD_PRINTCONSOLE, "[RCBot] Dynamic objectives' round stats reset.\n");
+        else UTIL_ServerPrintf("[RCBot] Dynamic objectives' round stats reset.\n");
+    } else {
+        showUsage(pClient);
+    }
+    return RCBotCommandReturn::Ok;
 }
 
 RCBotCommandReturn RCBotCommand_ChatContextCommand::execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) {

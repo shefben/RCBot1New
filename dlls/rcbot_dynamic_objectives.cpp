@@ -5,6 +5,7 @@
 #include <functional>       // For std::hash (if used, though not in current ID gen)
 #include <set>              // For std::set (for s_interestingObjectiveClassnames)
 #include <algorithm>        // For std::max, std::min
+#include <limits>           // For std::numeric_limits
 
 // Define the global instance
 DynamicObjectiveManager g_ObjectiveManager;
@@ -30,10 +31,10 @@ DynamicObjectiveManager::DynamicObjectiveManager() {
     if (gpGlobals) { // gpGlobals might be null if manager is constructed very early
         m_currentMapName = STRING(gpGlobals->mapname);
     }
-    // Example: Load interesting classnames (can be from a config file later)
-    // m_interesting_objective_classnames.insert("func_button");
-    // m_interesting_objective_classnames.insert("hostage_entity");
-    // m_interesting_objective_classnames.insert("item_bomb");
+    m_mapBoundsDetermined = false;
+    m_nextObjectiveClassnameId = 0;
+    m_mapMinBounds = Vector(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
+    m_mapMaxBounds = Vector(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest());
     // UTIL_ServerPrintf("DynamicObjectiveManager: Initialized. Current map (on construct): %s\n", m_currentMapName.c_str());
 }
 
@@ -145,17 +146,24 @@ void DynamicObjectiveManager::discoverObjectiveCandidate(edict_t* pEntity, const
             data.team_ownership = team_for_trigger;
         } else {
             // Basic team ownership from classname (very simplified)
-            if (obj_classname.find("team1") != std::string::npos || obj_classname.find("_t") != std::string::npos)
-                data.team_ownership = 1;
-            else if (obj_classname.find("team2") != std::string::npos || obj_classname.find("_ct") != std::string::npos)
-                data.team_ownership = 2;
+            if (obj_classname.find("team1") != std::string::npos || obj_classname.find("_t") != std::string::npos || obj_classname.find("terrorist") != std::string::npos)
+                data.team_ownership = 1; // TEAM 1 (e.g. Terrorist)
+            else if (obj_classname.find("team2") != std::string::npos || obj_classname.find("_ct") != std::string::npos || obj_classname.find("counter-terrorist") != std::string::npos)
+                data.team_ownership = 2; // TEAM 2 (e.g. CT)
             else
                 data.team_ownership = 0; // Neutral
         }
 
+        // Add to classname ID map if new and interesting
+        if (s_interestingObjectiveClassnames.count(obj_classname) || obj_classname.rfind("trigger_", 0) == 0) {
+            if (m_objectiveClassnameToId.find(obj_classname) == m_objectiveClassnameToId.end()) {
+                m_objectiveClassnameToId[obj_classname] = m_nextObjectiveClassnameId++;
+            }
+        }
+
         m_objective_candidates[id] = data;
-        UTIL_ServerPrintf("DOM: Discovered new objective candidate: %s (Class: %s, Loc: %.0f,%.0f,%.0f, Team: %d)\n",
-                          id.c_str(), obj_classname.c_str(), obj_location.x, obj_location.y, obj_location.z, data.team_ownership);
+        // UTIL_ServerPrintf("DOM: Discovered new objective candidate: %s (Class: %s, Loc: %.0f,%.0f,%.0f, Team: %d)\n",
+        //                   id.c_str(), obj_classname.c_str(), obj_location.x, obj_location.y, obj_location.z, data.team_ownership);
     } else {
         // Existing candidate
         it->second.last_seen_timestamp = current_time;
@@ -229,6 +237,230 @@ void DynamicObjectiveManager::decayAndUpdateObjectives(float current_time) {
     //                 pair.second.is_active = false;
     //             }
     //         }
+    //     }
+    // }
+}
+
+void DynamicObjectiveManager::determineMapBounds() {
+    if (m_objective_candidates.empty()) {
+        // Default to some reasonable small area if no objectives yet, or use world size if accessible
+        m_mapMinBounds = Vector(-1000, -1000, -1000);
+        m_mapMaxBounds = Vector( 1000,  1000,  1000);
+        m_mapBoundsDetermined = true; // Consider it "determined" for now
+        return;
+    }
+
+    m_mapMinBounds = Vector(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
+    m_mapMaxBounds = Vector(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest());
+
+    for (const auto& pair : m_objective_candidates) {
+        const Vector& loc = pair.second.location;
+        m_mapMinBounds.x = std::min(m_mapMinBounds.x, loc.x);
+        m_mapMinBounds.y = std::min(m_mapMinBounds.y, loc.y);
+        m_mapMinBounds.z = std::min(m_mapMinBounds.z, loc.z);
+        m_mapMaxBounds.x = std::max(m_mapMaxBounds.x, loc.x);
+        m_mapMaxBounds.y = std::max(m_mapMaxBounds.y, loc.y);
+        m_mapMaxBounds.z = std::max(m_mapMaxBounds.z, loc.z);
+    }
+    m_mapBoundsDetermined = true;
+    // UTIL_ServerPrintf("DOM: Map bounds determined: Min(%.0f,%.0f,%.0f) Max(%.0f,%.0f,%.0f)\n",
+    //     m_mapMinBounds.x, m_mapMinBounds.y, m_mapMinBounds.z,
+    //     m_mapMaxBounds.x, m_mapMaxBounds.y, m_mapMaxBounds.z);
+}
+
+
+std::vector<float> DynamicObjectiveManager::getObjectiveFeatureVector(const ObjectiveCandidateMetadata& objective) const {
+    std::vector<float> features;
+
+    if (!m_mapBoundsDetermined) {
+        // This might happen if called before determineMapBounds or if no objectives.
+        // Return empty or a default vector. For clustering, this is problematic.
+        // Let's assume determineMapBounds has been called.
+        // If not, the calling function (clusterObjectives) should call it.
+        // For safety, if bounds are default, features might not be well-normalized.
+        // UTIL_ServerPrintf("DOM_WARNING: getObjectiveFeatureVector called before map bounds determined.\n");
+    }
+
+    // 1. Normalized Location Features
+    float range_x = m_mapMaxBounds.x - m_mapMinBounds.x;
+    float range_y = m_mapMaxBounds.y - m_mapMinBounds.y;
+    float range_z = m_mapMaxBounds.z - m_mapMinBounds.z;
+
+    features.push_back(range_x > 1.0f ? std::max(0.0f, std::min(1.0f, (objective.location.x - m_mapMinBounds.x) / range_x)) : 0.5f);
+    features.push_back(range_y > 1.0f ? std::max(0.0f, std::min(1.0f, (objective.location.y - m_mapMinBounds.y) / range_y)) : 0.5f);
+    features.push_back(range_z > 1.0f ? std::max(0.0f, std::min(1.0f, (objective.location.z - m_mapMinBounds.z) / range_z)) : 0.5f);
+
+    // 2. Classname Feature (normalized ID)
+    float class_feature = 0.0f;
+    auto it = m_objectiveClassnameToId.find(objective.entity_classname);
+    if (it != m_objectiveClassnameToId.end() && m_nextObjectiveClassnameId > 0) {
+        class_feature = static_cast<float>(it->second) / static_cast<float>(m_nextObjectiveClassnameId -1); // Normalize by max ID seen
+                                                                                                           // (m_next... is one greater than max ID)
+    }
+    features.push_back(std::max(0.0f, std::min(1.0f, class_feature)));
+
+
+    // 3. Team Ownership Feature (could be one-hot encoded if few teams, or simple normalized value)
+    // Example: 0 for neutral, 0.5 for team1, 1.0 for team2 (assuming 2 main teams)
+    if (objective.team_ownership == 0) features.push_back(0.0f);
+    else if (objective.team_ownership == 1) features.push_back(0.5f);
+    else if (objective.team_ownership == 2) features.push_back(1.0f);
+    else features.push_back(0.0f); // Default for other teams
+
+    // 4. Confidence (already 0-1)
+    features.push_back(objective.confidence);
+
+    return features;
+}
+
+void DynamicObjectiveManager::clusterObjectives(int k_num_clusters) {
+    if (m_objective_candidates.empty() || k_num_clusters <= 0) {
+        UTIL_ServerPrintf("DOM: Not enough candidates or k is non-positive for clustering. Candidates: %d, K: %d\n",
+            m_objective_candidates.size(), k_num_clusters);
+        return;
+    }
+
+    if (m_objective_candidates.size() < (size_t)k_num_clusters) {
+         UTIL_ServerPrintf("DOM: Number of candidates (%d) is less than k_num_clusters (%d). Setting k to number of candidates.\n",
+            m_objective_candidates.size(), k_num_clusters);
+        k_num_clusters = m_objective_candidates.size();
+    }
+
+    if (!m_mapBoundsDetermined) {
+        determineMapBounds();
+    }
+
+    // Prepare data points (feature vectors)
+    std::vector<std::pair<std::string, std::vector<float>>> data_points;
+    for (const auto& pair : m_objective_candidates) {
+        if(pair.second.is_active) { // Only cluster active objectives
+            data_points.push_back({pair.first, getObjectiveFeatureVector(pair.second)});
+        }
+    }
+
+    if (data_points.size() < (size_t)k_num_clusters) {
+        UTIL_ServerPrintf("DOM: Not enough active candidates (%d) for K-Means with K=%d.\n", data_points.size(), k_num_clusters);
+        // Assign all to cluster 0 or handle differently
+        for (auto& pair_data : data_points) {
+            ObjectiveCandidateMetadata* objective_meta = getObjectiveCandidateById(pair_data.first);
+            if(objective_meta) objective_meta->cluster_id = 0;
+        }
+        return;
+    }
+
+
+    // Initialize Centroids: K-Means++ like initialization (pick first randomly, then others based on distance)
+    // For simplicity, a basic random sampling of initial distinct points is often sufficient as a start.
+    std::vector<std::vector<float>> centroids(k_num_clusters);
+    std::vector<int> chosen_indices;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    // Ensure data_points has enough elements for k_num_clusters unique centroids
+    if (data_points.size() == 0) {
+        UTIL_ServerPrintf("DOM_ERROR: No active data points to select centroids from for K-Means.\n");
+        return;
+    }
+
+    std::uniform_int_distribution<> distrib_idx(0, data_points.size() - 1);
+    for (int i = 0; i < k_num_clusters; ++i) {
+        int rand_idx = distrib_idx(gen);
+        // Ensure distinct centroids if possible, simple retry here, better is to pick from remaining.
+        // For now, this might pick same centroid multiple times if k is close to data_points.size()
+        // A better way for small k is to shuffle data_points and pick first k.
+        centroids[i] = data_points[rand_idx].second;
+    }
+
+
+    const int MAX_ITERATIONS = 100;
+    bool changed = true;
+
+    for (int iter = 0; iter < MAX_ITERATIONS && changed; ++iter) {
+        changed = false;
+
+        // Assignment Step
+        for (auto& point_pair : data_points) {
+            const std::string& objective_id = point_pair.first;
+            const std::vector<float>& features = point_pair.second;
+
+            if (features.empty()) continue;
+
+            int nearest_centroid_idx = -1;
+            float min_dist_sq = std::numeric_limits<float>::max();
+
+            for (int j = 0; j < k_num_clusters; ++j) {
+                if (centroids[j].size() != features.size()) { // Should not happen if initialized correctly
+                     // UTIL_ServerPrintf("DOM_KMEANS_ERROR: Feature size mismatch with centroid %d!\n", j);
+                     continue;
+                }
+                float current_dist_sq = 0.0f;
+                for (size_t feat_idx = 0; feat_idx < features.size(); ++feat_idx) {
+                    current_dist_sq += std::pow(features[feat_idx] - centroids[j][feat_idx], 2);
+                }
+                if (current_dist_sq < min_dist_sq) {
+                    min_dist_sq = current_dist_sq;
+                    nearest_centroid_idx = j;
+                }
+            }
+
+            ObjectiveCandidateMetadata* objective_meta = getObjectiveCandidateById(objective_id);
+            if (objective_meta && objective_meta->cluster_id != nearest_centroid_idx) {
+                objective_meta->cluster_id = nearest_centroid_idx;
+                changed = true;
+            }
+        }
+
+        // Update Step
+        if (changed) { // Only update centroids if assignments changed
+            std::vector<std::vector<float>> new_centroids(k_num_clusters);
+            std::vector<int> cluster_counts(k_num_clusters, 0);
+
+            // Initialize new_centroids with zeros (assuming feature vectors are not empty)
+            if(!data_points.empty() && !data_points[0].second.empty()){
+                for(int i=0; i<k_num_clusters; ++i) new_centroids[i].resize(data_points[0].second.size(), 0.0f);
+            } else { // No data points or features, cannot proceed
+                UTIL_ServerPrintf("DOM_KMEANS_ERROR: No features to update centroids.\n");
+                break;
+            }
+
+
+            for (const auto& point_pair : data_points) {
+                 ObjectiveCandidateMetadata* objective_meta = getObjectiveCandidateById(point_pair.first);
+                 if (objective_meta && objective_meta->cluster_id != -1) { // Check if assigned to a cluster
+                    const std::vector<float>& features = point_pair.second;
+                    for (size_t feat_idx = 0; feat_idx < features.size(); ++feat_idx) {
+                        new_centroids[objective_meta->cluster_id][feat_idx] += features[feat_idx];
+                    }
+                    cluster_counts[objective_meta->cluster_id]++;
+                 }
+            }
+
+            for (int j = 0; j < k_num_clusters; ++j) {
+                if (cluster_counts[j] > 0) {
+                    for (size_t feat_idx = 0; feat_idx < new_centroids[j].size(); ++feat_idx) {
+                        new_centroids[j][feat_idx] /= static_cast<float>(cluster_counts[j]);
+                    }
+                } else {
+                    // Handle empty cluster: re-initialize centroid
+                    // Pick a random data point to be the new centroid for this empty cluster
+                    if (!data_points.empty()) {
+                        new_centroids[j] = data_points[distrib_idx(gen)].second;
+                        // UTIL_ServerPrintf("DOM_KMEANS: Re-initializing empty cluster %d with random point.\n", j);
+                    }
+                }
+            }
+            centroids = new_centroids;
+        }
+    } // End iteration loop
+
+    UTIL_ServerPrintf("DOM: Clustering complete. %d active objectives into %d clusters.\n",
+        data_points.size(), k_num_clusters);
+
+    // For debugging, print cluster assignments
+    // for (const auto& pair : m_objective_candidates) {
+    //     if (pair.second.is_active) {
+    //         UTIL_ServerPrintf("  Objective: %s, Class: %s, Cluster: %d\n",
+    //                           pair.first.c_str(), pair.second.entity_classname.c_str(), pair.second.cluster_id);
     //     }
     // }
 }

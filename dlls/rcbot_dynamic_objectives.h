@@ -27,12 +27,14 @@ struct ObjectiveCandidateMetadata {
     float first_seen_timestamp;
     float last_seen_timestamp;
     bool  is_active;              // Still present in the map / relevant for current game phase
+    int   cluster_id;             // ID of the cluster this objective belongs to
 
     ObjectiveCandidateMetadata() :
         team_ownership(0), confidence(0.1f),
         times_interacted_positive_outcome(0), times_interacted_negative_outcome(0),
         times_seen_or_touched(0),
-        first_seen_timestamp(0.0f), last_seen_timestamp(0.0f), is_active(true) {
+        first_seen_timestamp(0.0f), last_seen_timestamp(0.0f), is_active(true),
+        cluster_id(-1) { // Initialize to -1 (unclustered)
         // location will be zero-initialized by Vector's default constructor
     }
 };
@@ -61,7 +63,7 @@ public:
 
     // For later phases
     void decayAndUpdateObjectives(float current_time); // Handles confidence decay, activity status
-    // void clusterObjectives();
+    void clusterObjectives(int k_num_clusters = 5); // K-Means clustering
     // void shareObjectives();
 
     // Helper
@@ -77,6 +79,17 @@ public:
 private:
     std::map<std::string, ObjectiveCandidateMetadata> m_objective_candidates;
     std::string m_currentMapName;
+
+    // For feature extraction and clustering
+    Vector m_mapMinBounds;
+    Vector m_mapMaxBounds;
+    bool m_mapBoundsDetermined;
+    std::map<std::string, int> m_objectiveClassnameToId;
+    int m_nextObjectiveClassnameId;
+
+    std::vector<float> getObjectiveFeatureVector(const ObjectiveCandidateMetadata& objective) const; // Removed bounds params for now, calculate on demand or store normalized
+    void determineMapBounds();
+
 
     // Example: Set of classnames considered inherently interesting for objective discovery
     // std::set<std::string> m_interesting_objective_classnames;

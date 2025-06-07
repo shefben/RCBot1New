@@ -37,6 +37,9 @@ private:
 	float m_fAddRemoveBotTime;
 	float m_fNodeDrawTime;
 	RCBotLongTermMemory m_longTermMemory;
+
+    float m_timeSinceLastObjectiveDecay; // Timer for periodic decay of dynamic objectives
+    static const float OBJECTIVE_DECAY_INTERVAL = 15.0f; // Seconds
 };
 
 extern RCBotManager gRCBotManager;

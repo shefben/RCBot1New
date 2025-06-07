@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "meta_api.h"
 #include "extdll.h"
-
+#include "rcbot_dynamic_objectives.h" // For g_ObjectiveManager access
 
 #define RCBOT_COMMAND_ACCESS_ROOT 1
 
@@ -425,6 +425,20 @@ public:
     {
     }
 
+    RCBotCommandReturn execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) override;
+};
+
+class RCBotCommand_ShowObjectives : public RCBotCommand
+{
+public:
+    RCBotCommand_ShowObjectives();
+    RCBotCommandReturn execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) override;
+};
+
+class RCBotCommand_ResetObjectives : public RCBotCommand
+{
+public:
+    RCBotCommand_ResetObjectives();
     RCBotCommandReturn execute(edict_t* pClient, const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5) override;
 };
 

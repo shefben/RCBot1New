@@ -37,6 +37,7 @@ RCBotManager::RCBotManager()
 	m_iQuota = 0;
 	m_fAddRemoveBotTime = 0.0f;
 	m_fNodeDrawTime = 0.0f;
+    m_timeSinceLastObjectiveDecay = 0.0f;
 	// m_longTermMemory is implicitly default-constructed
 }
 /// <summary>
@@ -86,6 +87,15 @@ void RCBotManager::Think()
     //         s_timeSinceLastRoundEndSim = 0.0f;
     //     }
     // }
+
+    // Periodically decay dynamic objectives
+    if (gpGlobals) { // Ensure gpGlobals is valid
+        m_timeSinceLastObjectiveDecay += gpGlobals->frametime;
+        if (m_timeSinceLastObjectiveDecay >= OBJECTIVE_DECAY_INTERVAL) {
+            g_ObjectiveManager.decayAndUpdateObjectives(gpGlobals->time);
+            m_timeSinceLastObjectiveDecay = 0.0f;
+        }
+    }
 }
 
 void RCBotManager::OnRoundEnd_Simulated(int winning_team_id) {
@@ -325,5 +335,10 @@ void RCBotManager::LevelInit()
         }
         UTIL_ServerPrintf("RCBotManager: Initial entity scan for dynamic objectives complete. Found %d candidates.\n",
             g_ObjectiveManager.getObjectiveCandidates().size());
+    }
+
+    // Perform initial clustering after discovering objectives
+    if (g_ObjectiveManager.getObjectiveCandidates().size() > 0) { // Only cluster if there's something to cluster
+        g_ObjectiveManager.clusterObjectives(5); // Example: 5 clusters
     }
 }
