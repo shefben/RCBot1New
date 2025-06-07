@@ -37,13 +37,15 @@ struct TaggedChatMessage {
     ChatSentiment sentiment;
     BotPersona persona_at_time_of_sending; // The persona of the bot when this message was generated/sent
     float timestamp;                       // Time the message was generated/sent (e.g., gpGlobals->time)
+    float sentiment_score;                 // Numerical sentiment score, e.g., from -1.0 (v. neg) to 1.0 (v. pos)
 
     // Default constructor
     TaggedChatMessage(const std::string& msg = "",
                       ChatSentiment s = SENTIMENT_NEUTRAL,
                       BotPersona p = PERSONA_NEUTRAL,
-                      float ts = 0.0f)
-        : message(msg), sentiment(s), persona_at_time_of_sending(p), timestamp(ts) {}
+                      float ts = 0.0f,
+                      float num_score = 0.0f)
+        : message(msg), sentiment(s), persona_at_time_of_sending(p), timestamp(ts), sentiment_score(num_score) {}
 };
 
 #endif // RCBOT_CHAT_TYPES_H

@@ -42,6 +42,9 @@ RCBotBase ::RCBotBase()
 	m_previousDistanceToFocusObjective = -1.0f;
 	m_hasFocusObjectiveLocation = false;
 	m_shapingRewardAccumulator = 0.0f;
+	m_perceivedPlayerAggression = 0.5f; // Initialize perception
+	m_perceivedPlayerCooperation = 0.5f; // Initialize perception
+	m_lastInteractingPlayerEdict.Set(nullptr); // Initialize EHandle
 
 	Init();
 	loadMacroActions(); // Load predefined macro actions
@@ -70,6 +73,14 @@ void RCBotBase::spawnInit()
 	m_fLastRunPlayerMove = gpGlobals->time;
 	m_pEnemy.Set(nullptr);
 	m_chatContextMemory.clear(); // Clear chat context on spawn/respawn
+
+	// Reset perception on spawn/respawn
+	m_perceivedPlayerAggression = 0.5f;
+	m_perceivedPlayerCooperation = 0.5f;
+	m_lastInteractingPlayerEdict.Set(nullptr);
+	m_previousDistanceToFocusObjective = -1.0f; // Also reset objective focus distance
+	m_hasFocusObjectiveLocation = false;
+    m_shapingRewardAccumulator = 0.0f;
 }
 
 void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
@@ -349,6 +360,14 @@ void RCBotBase::Think()
 	// }
 	// --- End Objective Interest System ---
 
+	// --- Player Perception Decay ---
+	m_perceivedPlayerAggression = m_perceivedPlayerAggression * PERCEPTION_DECAY_RATE + PERCEPTION_BASELINE * (1.0f - PERCEPTION_DECAY_RATE);
+	m_perceivedPlayerCooperation = m_perceivedPlayerCooperation * PERCEPTION_DECAY_RATE + PERCEPTION_BASELINE * (1.0f - PERCEPTION_DECAY_RATE);
+	// Clamp to ensure they stay within [0,1] after decay if necessary, though decay to baseline should handle this.
+    m_perceivedPlayerAggression = std::max(0.0f, std::min(1.0f, m_perceivedPlayerAggression));
+    m_perceivedPlayerCooperation = std::max(0.0f, std::min(1.0f, m_perceivedPlayerCooperation));
+
+
 	// Placeholder for opportunistic chat
 	// This is a very simple trigger, e.g., a small chance per Think cycle.
 	// A more sophisticated system would tie chats to specific game events (kills, deaths, objectives, etc.)
@@ -363,6 +382,21 @@ void RCBotBase::Think()
         evaluateAndAdjustPersona();
         m_timeSinceLastPersonaEvaluation = 0.0f;
     }
+
+	// --- Behavioral Adjustment Placeholders ---
+	// if (m_lastInteractingPlayerEdict.Get() && m_perceivedPlayerAggression > 0.7f) {
+	//     // TODO: Increase likelihood of targeting m_lastInteractingPlayerEdict.Get()
+	//     // TODO: Maybe use more aggressive chat responses if talking about this player
+	//		   UTIL_ServerPrintf("Bot %s is feeling aggressive towards %s!\n", STRING(m_pEdict->v.netname), STRING(m_lastInteractingPlayerEdict.Get()->v.netname));
+	// }
+	// if (m_perceivedPlayerCooperation > 0.7f) {
+	//     // TODO: Increase likelihood of following/supporting players
+	//     // TODO: Bias towards more positive/supportive chat
+	//     if(m_lastInteractingPlayerEdict.Get())
+	//		   UTIL_ServerPrintf("Bot %s is feeling cooperative towards %s!\n", STRING(m_pEdict->v.netname), STRING(m_lastInteractingPlayerEdict.Get()->v.netname));
+	//     else
+	//         UTIL_ServerPrintf("Bot %s is feeling generally cooperative!\n", STRING(m_pEdict->v.netname));
+	// }
 
 
 	if (m_pSchedule != nullptr)
@@ -887,4 +921,32 @@ void RCBotBase::evaluateAndAdjustPersona() {
         setPersona(nextPersona);
         // SERVER_PRINT("RCBot %s: Periodically changed persona to %d.\n", STRING(m_pEdict->v.netname), nextPersona);
     }
+}
+
+void RCBotBase::updatePerceptionFromPlayerChat(edict_t* pPlayerEdict, float chat_sentiment_score) {
+    if (!pPlayerEdict || !m_pEdict) return;
+
+    m_lastInteractingPlayerEdict.Set(pPlayerEdict);
+
+    if (chat_sentiment_score < -0.1f) { // Negative chat
+        // chat_sentiment_score is negative, so subtracting it increases aggression
+        m_perceivedPlayerAggression -= chat_sentiment_score * SENTIMENT_TO_AGGRESSION_FACTOR;
+        // Adding a negative score decreases cooperation
+        m_perceivedPlayerCooperation += chat_sentiment_score * SENTIMENT_TO_COOPERATION_FACTOR;
+    } else if (chat_sentiment_score > 0.1f) { // Positive chat
+        m_perceivedPlayerCooperation += chat_sentiment_score * SENTIMENT_TO_COOPERATION_FACTOR;
+        // Positive score decreases perceived aggression
+        m_perceivedPlayerAggression -= chat_sentiment_score * SENTIMENT_TO_AGGRESSION_FACTOR;
+    }
+
+    // Clamp values to [0.0, 1.0]
+    m_perceivedPlayerAggression = std::max(0.0f, std::min(1.0f, m_perceivedPlayerAggression));
+    m_perceivedPlayerCooperation = std::max(0.0f, std::min(1.0f, m_perceivedPlayerCooperation));
+
+    UTIL_ServerPrintf("Bot %s perception of player %s (after chat score %.2f): Aggro=%.2f, Coop=%.2f\n",
+        STRING(m_pEdict->v.netname),
+        STRING(pPlayerEdict->v.netname),
+        chat_sentiment_score,
+        m_perceivedPlayerAggression,
+        m_perceivedPlayerCooperation);
 }

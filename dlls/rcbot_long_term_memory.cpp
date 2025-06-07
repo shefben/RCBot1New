@@ -1,208 +1,298 @@
 #include "rcbot_long_term_memory.h"
-#include "extdll.h" // For gpGlobals if needed for timestamps or game specific data
-#include "util.h" // For UTIL_LogPrintf or other logging if available
+#include "extdll.h" // For gpGlobals if needed
+#include "util.h"   // For UTIL_LogPrintf / UTIL_ServerPrintf or other logging
+#include <stdio.h>  // For fprintf, snprintf for SQLite errors
 
-#include <fstream>
-#include <sstream>
-#include <iomanip> // For std::setw, std::setfill with timestamps
-#include <algorithm> // For std::replace
-#include <filesystem> // For directory creation and file listing (C++17)
-                     // If C++17 <filesystem> is not available, platform-specific code or
-                     // simpler directory handling would be needed. For this subtask,
-                     // we'll assume it's available or that basic file operations in a known dir will work.
-
-// Define a subdirectory for episodes. This path is relative to the game's execution path.
-// Half-Life typically runs from the main game directory (e.g., "Half-Life").
-// Metamod might allow access to create "rcbot/episodes" there.
-const std::string DEFAULT_EPISODE_STORAGE_PATH = "rcbot/episodes/";
-
-// Helper function to ensure a directory exists
-// Note: Requires <filesystem>
-void EnsureDirectoryExists(const std::string& path) {
-    try {
-        if (!std::filesystem::exists(path)) {
-            std::filesystem::create_directories(path);
-        }
-    } catch (const std::filesystem::filesystem_error& e) {
-        // Log error - using UTIL_LogPrintf if available, otherwise fallback
-        // For now, just printing to stderr as an example
-        fprintf(stderr, "Filesystem error: %s\n", e.what());
-    }
-}
-
-
-RCBotLongTermMemory::RCBotLongTermMemory() : episodeStoragePath(DEFAULT_EPISODE_STORAGE_PATH) {
-    EnsureDirectoryExists(episodeStoragePath);
-}
-
-std::string RCBotLongTermMemory::generateEpisodeFilename(const EpisodeMetadata& metadata) const {
-    std::stringstream ss;
-    ss << metadata.mapName << "_";
-
-    // Create a simplified gametype string from cvars for the filename
-    std::string gameTypeStr;
-    for(const auto& pair : metadata.gameCvars) {
-        gameTypeStr += pair.first + "_" + pair.second + "_";
-    }
-    if (!gameTypeStr.empty()) {
-       gameTypeStr.pop_back(); // remove last "_"
+// Constructor: Opens the database and initializes the schema.
+RCBotLongTermMemory::RCBotLongTermMemory() : m_db(nullptr) {
+    int rc = sqlite3_open("rcbot_ltm.sqlite", &m_db);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM Error: Can't open database: %s\n", sqlite3_errmsg(m_db));
+        sqlite3_close(m_db); // sqlite3_close can handle a NULL m_db if open failed partway
+        m_db = nullptr;
+        return;
     } else {
-        gameTypeStr = "default";
+        // fprintf(stdout, "RCBotLTM: Opened database successfully\n"); // Or use UTIL_LogPrintf
+        UTIL_ServerPrintf("RCBotLTM: Opened database successfully: rcbot_ltm.sqlite\n");
     }
-    // Sanitize gameTypeStr for filename (replace non-alphanumeric)
-    std::replace_if(gameTypeStr.begin(), gameTypeStr.end(), [](char c){ return !isalnum(c) && c != '_'; }, '_');
-    ss << gameTypeStr << "_";
-
-    ss << metadata.timestamp << ".episode";
-
-    std::string filename = ss.str();
-    // Sanitize the whole filename to be safe
-    std::replace_if(filename.begin(), filename.end(), [](char c){ return !isalnum(c) && c != '.' && c != '_'; }, '_');
-    return filename;
+    initializeDatabase();
 }
 
-bool RCBotLongTermMemory::saveEpisodeToFile(const std::string& filePath, const Episode& episode) {
-    std::ofstream outFile(filePath);
-    if (!outFile.is_open()) {
-        // Log error
-        fprintf(stderr, "Error: Could not open file for writing: %s\n", filePath.c_str());
+// Destructor: Closes the database connection.
+RCBotLongTermMemory::~RCBotLongTermMemory() {
+    if (m_db) {
+        sqlite3_close(m_db);
+        m_db = nullptr;
+        // fprintf(stdout, "RCBotLTM: Closed database connection.\n");
+        UTIL_ServerPrintf("RCBotLTM: Closed database connection.\n");
+    }
+}
+
+// Helper to execute simple SQL statements (CREATE, INSERT, UPDATE, DELETE).
+bool RCBotLongTermMemory::executeSQL(const std::string& sql_statement) {
+    if (!m_db) return false;
+
+    char* pErrMsg = nullptr;
+    int rc = sqlite3_exec(m_db, sql_statement.c_str(), nullptr, nullptr, &pErrMsg);
+
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error: %s (Query: %s)\n", pErrMsg, sql_statement.c_str());
+        sqlite3_free(pErrMsg);
         return false;
     }
-
-    // --- Save Metadata ---
-    outFile << "MapName: " << episode.metadata.mapName << std::endl;
-    outFile << "Timestamp: " << episode.metadata.timestamp << std::endl;
-    outFile << "Outcome: " << episode.metadata.outcome << std::endl;
-
-    outFile << "GameCvars_Count: " << episode.metadata.gameCvars.size() << std::endl;
-    for (const auto& pair : episode.metadata.gameCvars) {
-        outFile << pair.first << ": " << pair.second << std::endl;
-    }
-
-    outFile << "ModFlags_Count: " << episode.metadata.modFlags.size() << std::endl;
-    for (const auto& flag : episode.metadata.modFlags) {
-        outFile << flag << std::endl;
-    }
-
-    // --- Save Events ---
-    outFile << "Events_Count: " << episode.events.size() << std::endl;
-    for (const auto& event : episode.events) {
-        outFile << static_cast<int>(event.type) << " "
-                << event.timestamp << " "
-                << event.damageAmount; // Assuming GameEvent structure for now
-        // Add other event data members here, separated by spaces
-        outFile << std::endl;
-    }
-
-    outFile.close();
     return true;
 }
 
+// Initializes the database schema if tables don't exist.
+void RCBotLongTermMemory::initializeDatabase() {
+    if (!m_db) return;
+
+    const std::string create_episodes_table_sql =
+        "CREATE TABLE IF NOT EXISTS Episodes ("
+        "episode_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "map_name TEXT NOT NULL, "
+        "gametype_cvar TEXT, " // Store as JSON string or concatenated string
+        "mod_flags TEXT, "     // Store as JSON string or concatenated string
+        "timestamp REAL NOT NULL, "
+        "outcome TEXT"
+        ");";
+
+    if (!executeSQL(create_episodes_table_sql)) {
+        fprintf(stderr, "RCBotLTM Error: Failed to create Episodes table.\n");
+    } else {
+        // UTIL_ServerPrintf("RCBotLTM: Episodes table ensured.\n");
+    }
+
+    const std::string create_game_events_table_sql =
+        "CREATE TABLE IF NOT EXISTS GameEvents ("
+        "event_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "episode_id INTEGER NOT NULL, "
+        "timestamp REAL NOT NULL, "
+        "event_type INTEGER NOT NULL, " // Enum GameEventType cast to int
+        "damage_amount REAL, "          // Specific to damage events
+        "attacker_info TEXT, "          // Placeholder for more complex data (e.g., player name/ID, entity class)
+        "target_info TEXT, "            // Placeholder
+        "FOREIGN KEY(episode_id) REFERENCES Episodes(episode_id) ON DELETE CASCADE"
+        ");";
+
+    if (!executeSQL(create_game_events_table_sql)) {
+        fprintf(stderr, "RCBotLTM Error: Failed to create GameEvents table.\n");
+    } else {
+        // UTIL_ServerPrintf("RCBotLTM: GameEvents table ensured.\n");
+    }
+}
+
+// Archives an episode. Logic will be updated in a subsequent subtask to use SQLite.
 void RCBotLongTermMemory::archiveEpisode(const Episode& episode) {
-    EnsureDirectoryExists(episodeStoragePath); // Ensure directory exists before saving
-    std::string filename = generateEpisodeFilename(episode.metadata);
-    std::string fullPath = episodeStoragePath + filename;
+    if (!m_db) {
+        fprintf(stderr, "RCBotLTM Error: Database not open. Cannot archive episode.\n");
+        return;
+    }
+    // TODO: Implement SQLite insertion logic for Episode and its GameEvents.
+    // This will involve:
+    // 1. INSERT into Episodes table.
+    // 2. Get last_insert_rowid() for the episode_id.
+    // 3. Loop through episode.events and INSERT them into GameEvents table with the episode_id.
+    // All of this should ideally be within a transaction.
+    // UTIL_ServerPrintf("RCBotLTM: archiveEpisode called for map %s (Not yet fully implemented for SQLite).\n", episode.metadata.mapName.c_str());
 
-    if (!saveEpisodeToFile(fullPath, episode)) {
-        // Log error
-        fprintf(stderr, "Error: Failed to archive episode to %s\n", fullPath.c_str());
+    if (!executeSQL("BEGIN TRANSACTION;")) {
+        fprintf(stderr, "RCBotLTM Error: Could not begin transaction for archiveEpisode.\n");
+        return;
+    }
+
+    sqlite3_stmt* episode_stmt = nullptr;
+    const char* episode_sql = "INSERT INTO Episodes (map_name, gametype_cvar, mod_flags, timestamp, outcome) VALUES (?, ?, ?, ?, ?);";
+
+    int rc = sqlite3_prepare_v2(m_db, episode_sql, -1, &episode_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error preparing episode insert: %s\n", sqlite3_errmsg(m_db));
+        executeSQL("ROLLBACK;");
+        return;
+    }
+
+    // Serialize gameCvars (map to string)
+    std::string gameCvars_str;
+    for (const auto& pair : episode.metadata.gameCvars) {
+        gameCvars_str += pair.first + "=" + pair.second + ";";
+    }
+    if (!gameCvars_str.empty()) gameCvars_str.pop_back(); // Remove last ';'
+
+    // Serialize modFlags (vector to string)
+    std::string modFlags_str;
+    for (const auto& flag : episode.metadata.modFlags) {
+        modFlags_str += flag + ";";
+    }
+    if (!modFlags_str.empty()) modFlags_str.pop_back();
+
+    sqlite3_bind_text(episode_stmt, 1, episode.metadata.mapName.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(episode_stmt, 2, gameCvars_str.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(episode_stmt, 3, modFlags_str.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_double(episode_stmt, 4, static_cast<double>(episode.metadata.timestamp));
+    sqlite3_bind_text(episode_stmt, 5, episode.metadata.outcome.c_str(), -1, SQLITE_STATIC);
+
+    if (sqlite3_step(episode_stmt) != SQLITE_DONE) {
+        fprintf(stderr, "RCBotLTM SQL error inserting episode: %s\n", sqlite3_errmsg(m_db));
+        sqlite3_finalize(episode_stmt);
+        executeSQL("ROLLBACK;");
+        return;
+    }
+    sqlite3_finalize(episode_stmt);
+    long long new_episode_id = sqlite3_last_insert_rowid(m_db);
+
+    // Insert GameEvents
+    sqlite3_stmt* event_stmt = nullptr;
+    const char* event_sql = "INSERT INTO GameEvents (episode_id, timestamp, event_type, damage_amount, attacker_info, target_info) VALUES (?, ?, ?, ?, ?, ?);";
+    rc = sqlite3_prepare_v2(m_db, event_sql, -1, &event_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error preparing event insert: %s\n", sqlite3_errmsg(m_db));
+        executeSQL("ROLLBACK;");
+        return;
+    }
+
+    for (const auto& event_item : episode.events) {
+        sqlite3_bind_int64(event_stmt, 1, new_episode_id);
+        sqlite3_bind_double(event_stmt, 2, event_item.timestamp);
+        sqlite3_bind_int(event_stmt, 3, static_cast<int>(event_item.type));
+        sqlite3_bind_double(event_stmt, 4, event_item.damageAmount);
+        sqlite3_bind_text(event_stmt, 5, event_item.attacker_info_str.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(event_stmt, 6, event_item.target_info_str.c_str(), -1, SQLITE_STATIC);
+
+        if (sqlite3_step(event_stmt) != SQLITE_DONE) {
+            fprintf(stderr, "RCBotLTM SQL error inserting game event: %s\n", sqlite3_errmsg(m_db));
+            // Continue to try and insert other events? Or rollback? For now, log and continue.
+        }
+        sqlite3_reset(event_stmt); // Reset for next bind
+    }
+    sqlite3_finalize(event_stmt);
+
+    if (!executeSQL("COMMIT;")) {
+         fprintf(stderr, "RCBotLTM Error: Could not commit transaction for archiveEpisode.\n");
+         // Rollback might have already been called by a failed executeSQL if it supports nested transactions or state.
+         // However, sqlite3_exec doesn't support nested BEGIN/COMMIT directly.
+         // If COMMIT fails after successful individual steps, the DB state might be as per last successful implicit commit.
     } else {
-        // Optionally, add to a list of loaded/indexed episodes if keeping some in memory
-        // loadedEpisodes.push_back(episode);
-        // fprintf(stdout, "Successfully archived episode to %s\n", fullPath.c_str());
+        // UTIL_ServerPrintf("RCBotLTM: Successfully archived episode ID %lld for map %s.\n", new_episode_id, episode.metadata.mapName.c_str());
     }
 }
 
-
-bool RCBotLongTermMemory::loadEpisodeFromFile(const std::string& filePath, Episode& outEpisode) {
-    std::ifstream inFile(filePath);
-    if (!inFile.is_open()) {
-        fprintf(stderr, "Error: Could not open file for reading: %s\n", filePath.c_str());
-        return false;
-    }
-
-    std::string line;
-    try {
-        // --- Load Metadata ---
-        std::getline(inFile, line); outEpisode.metadata.mapName = line.substr(line.find(": ") + 2);
-        std::getline(inFile, line); outEpisode.metadata.timestamp = std::stol(line.substr(line.find(": ") + 2));
-        std::getline(inFile, line); outEpisode.metadata.outcome = line.substr(line.find(": ") + 2);
-
-        std::getline(inFile, line); int cvarsCount = std::stoi(line.substr(line.find(": ") + 2));
-        for (int i = 0; i < cvarsCount; ++i) {
-            std::getline(inFile, line);
-            size_t colonPos = line.find(": ");
-            outEpisode.metadata.gameCvars[line.substr(0, colonPos)] = line.substr(colonPos + 2);
-        }
-
-        std::getline(inFile, line); int flagsCount = std::stoi(line.substr(line.find(": ") + 2));
-        for (int i = 0; i < flagsCount; ++i) {
-            std::getline(inFile, line);
-            outEpisode.metadata.modFlags.push_back(line);
-        }
-
-        // --- Load Events ---
-        std::getline(inFile, line); int eventsCount = std::stoi(line.substr(line.find(": ") + 2));
-        outEpisode.events.reserve(eventsCount);
-        for (int i = 0; i < eventsCount; ++i) {
-            int typeInt;
-            float timestamp, damageAmount; // Extend as per GameEvent
-            inFile >> typeInt >> timestamp >> damageAmount;
-            // Add other event data members here
-
-            // Basic GameEvent constructor assumed.
-            // This needs to match the GameEvent definition from rcbot_short_term_memory.h
-            outEpisode.events.emplace_back(static_cast<GameEventType>(typeInt), timestamp, damageAmount);
-            std::getline(inFile, line); // Consume rest of the line
-        }
-    } catch (const std::exception& e) {
-        fprintf(stderr, "Error parsing episode file %s: %s\n", filePath.c_str(), e.what());
-        inFile.close();
-        return false;
-    }
-
-    inFile.close();
-    return true;
-}
-
-
+// Retrieves episodes.
 std::vector<Episode> RCBotLongTermMemory::retrieveEpisodes(const std::string& mapNameFilter, const std::string& gametypeFilter) {
-    std::vector<Episode> matchedEpisodes;
-    EnsureDirectoryExists(episodeStoragePath);
+    std::vector<Episode> retrieved_episodes;
+    if (!m_db) {
+        fprintf(stderr, "RCBotLTM Error: Database not open. Cannot retrieve episodes.\n");
+        return retrieved_episodes;
+    }
 
-    try {
-        for (const auto& entry : std::filesystem::directory_iterator(episodeStoragePath)) {
-            if (entry.is_regular_file()) {
-                std::string filename = entry.path().filename().string();
-                // Basic filtering: check if filename contains mapName
-                // More sophisticated parsing of filename or file content would be needed for gametypeFilter
-                if (filename.find(mapNameFilter) != std::string::npos) {
-                    Episode ep;
-                    if (loadEpisodeFromFile(entry.path().string(), ep)) {
-                        // Further filter by gametype if filter is provided and if metadata supports it well
-                        bool gametypeMatch = true;
-                        if (!gametypeFilter.empty()) {
-                            // This is a simplified check. A real implementation would parse
-                            // gameCvars from ep.metadata more robustly.
-                            std::string combinedCvars;
-                            for(const auto& pair : ep.metadata.gameCvars) {
-                                combinedCvars += pair.first + "_" + pair.second;
-                            }
-                            if (combinedCvars.find(gametypeFilter) == std::string::npos) {
-                                gametypeMatch = false;
-                            }
-                        }
+    sqlite3_stmt* episode_stmt = nullptr;
+    std::string sql = "SELECT episode_id, map_name, gametype_cvar, mod_flags, timestamp, outcome FROM Episodes";
+    std::vector<std::string> params;
+    bool whereClauseAdded = false;
 
-                        if (gametypeMatch) {
-                             matchedEpisodes.push_back(ep);
-                        }
-                    }
+    if (!mapNameFilter.empty()) {
+        sql += " WHERE map_name = ?";
+        params.push_back(mapNameFilter);
+        whereClauseAdded = true;
+    }
+    // TODO: Add gametypeFilter if provided and non-empty
+    // if (!gametypeFilter.empty()) {
+    //     sql += whereClauseAdded ? " AND " : " WHERE ";
+    //     sql += " gametype_cvar LIKE ?"; // Using LIKE for flexibility if gametype_cvar is semi-colon separated
+    //     params.push_back("%" + gametypeFilter + "%");
+    // }
+    sql += ";";
+
+    int rc = sqlite3_prepare_v2(m_db, sql.c_str(), -1, &episode_stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "RCBotLTM SQL error preparing episode select: %s\n", sqlite3_errmsg(m_db));
+        return retrieved_episodes;
+    }
+
+    for (size_t i = 0; i < params.size(); ++i) {
+        sqlite3_bind_text(episode_stmt, i + 1, params[i].c_str(), -1, SQLITE_STATIC);
+    }
+
+    while (sqlite3_step(episode_stmt) == SQLITE_ROW) {
+        Episode current_episode;
+        long long current_episode_id = sqlite3_column_int64(episode_stmt, 0);
+
+        current_episode.metadata.mapName = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 1));
+
+        // Deserialize gameCvars
+        const char* gameCvars_cstr = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 2));
+        if (gameCvars_cstr) {
+            std::string gameCvars_str(gameCvars_cstr);
+            std::stringstream ss_cvars(gameCvars_str);
+            std::string pair_str;
+            while(std::getline(ss_cvars, pair_str, ';')) {
+                size_t eq_pos = pair_str.find('=');
+                if (eq_pos != std::string::npos) {
+                    current_episode.metadata.gameCvars[pair_str.substr(0, eq_pos)] = pair_str.substr(eq_pos + 1);
                 }
             }
         }
-    } catch (const std::filesystem::filesystem_error& e) {
-         fprintf(stderr, "Filesystem error while retrieving episodes: %s\n", e.what());
-    }
 
-    return matchedEpisodes;
+        // Deserialize modFlags
+        const char* modFlags_cstr = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 3));
+        if (modFlags_cstr) {
+            std::string modFlags_str(modFlags_cstr);
+            std::stringstream ss_flags(modFlags_str);
+            std::string flag;
+            while(std::getline(ss_flags, flag, ';')) {
+                if(!flag.empty()) current_episode.metadata.modFlags.push_back(flag);
+            }
+        }
+
+        current_episode.metadata.timestamp = static_cast<long>(sqlite3_column_double(episode_stmt, 4));
+        const char* outcome_cstr = reinterpret_cast<const char*>(sqlite3_column_text(episode_stmt, 5));
+        current_episode.metadata.outcome = outcome_cstr ? outcome_cstr : "";
+
+
+        // Fetch associated GameEvents
+        sqlite3_stmt* event_stmt = nullptr;
+        const char* event_sql = "SELECT timestamp, event_type, damage_amount, attacker_info, target_info FROM GameEvents WHERE episode_id = ? ORDER BY timestamp ASC;";
+        rc = sqlite3_prepare_v2(m_db, event_sql, -1, &event_stmt, nullptr);
+        if (rc == SQLITE_OK) {
+            sqlite3_bind_int64(event_stmt, 1, current_episode_id);
+            while (sqlite3_step(event_stmt) == SQLITE_ROW) {
+                GameEvent current_event;
+                current_event.timestamp = static_cast<float>(sqlite3_column_double(event_stmt, 0));
+                current_event.type = static_cast<GameEventType>(sqlite3_column_int(event_stmt, 1));
+                current_event.damageAmount = static_cast<float>(sqlite3_column_double(event_stmt, 2));
+                const char* attacker_cstr = reinterpret_cast<const char*>(sqlite3_column_text(event_stmt, 3));
+                current_event.attacker_info_str = attacker_cstr ? attacker_cstr : "";
+                const char* target_cstr = reinterpret_cast<const char*>(sqlite3_column_text(event_stmt, 4));
+                current_event.target_info_str = target_cstr ? target_cstr : "";
+                current_episode.events.push_back(current_event);
+            }
+            sqlite3_finalize(event_stmt);
+        } else {
+            fprintf(stderr, "RCBotLTM SQL error preparing event select for episode %lld: %s\n", current_episode_id, sqlite3_errmsg(m_db));
+        }
+        retrieved_episodes.push_back(current_episode);
+    }
+    sqlite3_finalize(episode_stmt);
+
+    // UTIL_ServerPrintf("RCBotLTM: Retrieved %d episodes for map %s.\n", retrieved_episodes.size(), mapNameFilter.c_str());
+    return retrieved_episodes;
 }
+
+/*
+// Old file-based methods - to be removed or fully commented.
+// For now, just commenting out their bodies as they are not part of the SQLite setup.
+
+std::string RCBotLongTermMemory::generateEpisodeFilename(const EpisodeMetadata& metadata) const {
+    // ... old code ...
+    return "";
+}
+
+bool RCBotLongTermMemory::saveEpisodeToFile(const std::string& filePath, const Episode& episode) {
+    // ... old code ...
+    return false;
+}
+
+bool RCBotLongTermMemory::loadEpisodeFromFile(const std::string& filePath, Episode& outEpisode) {
+    // ... old code ...
+    return false;
+}
+*/

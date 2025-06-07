@@ -2,6 +2,7 @@
 #define RCBOT_SHORT_TERM_MEMORY_H
 
 #include <vector>
+#include <string> // For std::string
 #include <algorithm> // Required for std::min
 
 // Define a maximum size for the buffer
@@ -24,9 +25,19 @@ struct GameEvent {
     // For a sound event:
     // Vector soundOrigin;
 
+    // Information for LTM storage (populated from edicts at time of event)
+    std::string attacker_info_str;
+    std::string target_info_str;
+
     // Constructor for damage event
-    GameEvent(GameEventType type, float timestamp, float damageAmount)
-        : type(type), timestamp(timestamp), damageAmount(damageAmount) {}
+    GameEvent(GameEventType type, float timestamp, float damageAmount,
+              const std::string& attacker_info = "", const std::string& target_info = "")
+        : type(type), timestamp(timestamp), damageAmount(damageAmount),
+          attacker_info_str(attacker_info), target_info_str(target_info) {}
+
+    // Default constructor for convenience (e.g. when creating from DB)
+    GameEvent() : type(DAMAGE_EVENT), timestamp(0.0f), damageAmount(0.0f) {}
+
 
     // Add other constructors as needed for different event types
 };

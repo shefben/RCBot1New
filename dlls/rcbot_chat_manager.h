@@ -6,6 +6,7 @@
 #include "extdll.h"     // For gpGlobals
 #include "rcbot_chat_history.h" // For RCBotChatHistory
 #include "rcbot_ngram_model.h"  // For RCBotNgramBase
+#include "SentimentAnalyzer.h"  // For SentimentAnalyzer
 
 class RCBotChatManager {
 public:
@@ -32,6 +33,7 @@ private:
     // Helper to extract a seed phrase from context for N-gram generation
     std::string getSeedFromContext(RCBotChatHistory* chat_history, const std::string& context_trigger);
 
+    SentimentAnalyzer m_sentimentAnalyzer; // Sentiment analyzer instance
     // std::map<BotPersona, std::map<ChatSentiment, std::vector<std::string>>> m_chatLines; // Future use for more structured chat
 };
 

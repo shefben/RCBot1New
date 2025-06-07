@@ -144,15 +144,22 @@ void RCBotChatManager::recordPlayerChat(edict_t* pPlayerEdict, const std::string
 
     // Create a TaggedChatMessage for the player's message.
     // For now, persona is set to NEUTRAL (or a specific PLAYER persona if added).
-    // Sentiment analysis would be needed for a more accurate sentiment.
+
+    float sentimentScore = m_sentimentAnalyzer.analyzeSentiment(messageText);
+
+    // For now, we'll just store the raw score. Mapping to ChatSentiment enum could be done here or later.
     TaggedChatMessage playerMessage(
         messageText,
-        SENTIMENT_NEUTRAL, // Placeholder: actual sentiment analysis would be complex
-        PERSONA_NEUTRAL,   // Placeholder: could be a specific "PERSONA_PLAYER"
-        gpGlobals->time
+        SENTIMENT_NEUTRAL, // Could be derived from score if thresholds are set
+        PERSONA_NEUTRAL,   // Or a specific PERSONA_PLAYER if defined
+        gpGlobals->time,
+        sentimentScore     // Store the analyzed numerical score
     );
-    // TODO: Consider adding sender information to TaggedChatMessage or ContextualItem if needed,
-    // e.g., playerMessage.senderName = STRING(pPlayerEdict->v.netname);
+
+    UTIL_ServerPrintf("Player '%s' said: '%s' (Analyzed Sentiment Score: %.2f)\n",
+        pPlayerEdict ? STRING(pPlayerEdict->v.netname) : "UnknownPlayer", // Handle null pPlayerEdict just in case
+        messageText.c_str(),
+        sentimentScore);
 
     ContextualItem contextItem(playerMessage);
 
@@ -185,11 +192,18 @@ void RCBotChatManager::recordPlayerChat(edict_t* pPlayerEdict, const std::string
     // A safer way if RCBotManager has a getter like `getActiveBots()`
     const std::vector<RCBotBase*>& allBots = gRCBotManager.getActiveBots(); // Assuming such a method
     for (RCBotBase* bot : allBots) {
-        if (bot && bot->getChatContextMemory()) {
-            // Add to this bot's context memory, only if the bot is not the sender
-            if (bot->getEdict() != pPlayerEdict) {
+        if (bot && bot->getEdict() != pPlayerEdict) { // Don't update perception for the bot that sent the message
+            if (bot->getChatContextMemory()) { // Ensure memory is valid
                  bot->getChatContextMemory()->addItem(contextItem);
             }
+            // Update each *other* bot's perception of the speaking player
+            bot->updatePerceptionFromPlayerChat(pPlayerEdict, sentimentScore);
+        } else if (bot && bot->getEdict() == pPlayerEdict && bot->getChatContextMemory()) {
+            // The bot itself also records the message it sent (if it's a bot player), but doesn't update its perception of itself.
+            // This case is more for if a bot is masquerading as a player or if bot-to-bot chat is implemented.
+            // For player chat, this 'else if' branch might not be strictly needed if pPlayerEdict is always human.
+            // However, adding it to its own context can be useful.
+             bot->getChatContextMemory()->addItem(contextItem);
         }
     }
     // If no direct bot list access, RCBotManager should have a method:

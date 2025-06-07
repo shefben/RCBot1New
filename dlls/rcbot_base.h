@@ -271,6 +271,20 @@ public:
 	static const float SIGNIFICANT_PROGRESS_THRESHOLD = 1.0f; // Min distance change to get reward
 	static const float INTEREST_BOOST_FROM_SHAPING_FACTOR = 0.01f;
 
+public:
+	// Player Perception Model (based on chat)
+	float m_perceivedPlayerAggression;
+	float m_perceivedPlayerCooperation;
+	EHandle m_lastInteractingPlayerEdict; // Using EHandle for safety
+
+	void updatePerceptionFromPlayerChat(edict_t* pPlayerEdict, float chat_sentiment_score);
+
+	// Constants for Player Perception Model
+	static const float SENTIMENT_TO_AGGRESSION_FACTOR = 0.1f;
+	static const float SENTIMENT_TO_COOPERATION_FACTOR = 0.1f;
+	static const float PERCEPTION_DECAY_RATE = 0.995f; // Per Think cycle, towards baseline
+	static const float PERCEPTION_BASELINE = 0.5f;    // Neutral baseline for perception decay
+
 
 private: // Make persona private and expose via getter/setter
 	BotPersona m_persona;

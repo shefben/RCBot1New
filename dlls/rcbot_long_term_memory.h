@@ -5,9 +5,10 @@
 #include <vector>
 #include <map> // For gametype CVARs or mod flags
 #include "rcbot_short_term_memory.h" // For GameEvent
+#include "sqlite/sqlite3.h"      // For SQLite integration
 
-// Forward declaration
-class RCBotLongTermMemory;
+// Forward declaration - no longer needed as RCBotLongTermMemory is defined below.
+// class RCBotLongTermMemory;
 
 // Structure to hold metadata for an episode
 struct EpisodeMetadata {
@@ -31,29 +32,26 @@ struct Episode {
 class RCBotLongTermMemory {
 public:
     RCBotLongTermMemory();
+    ~RCBotLongTermMemory(); // Added destructor to close DB
 
-    // Archives an episode by serializing it to a file
-    // The filename could be generated from metadata (map, timestamp)
-    // For now, assumes episodes are stored in a predefined directory e.g., "rcbot/episodes/"
+    // Archives an episode by serializing it to the database
     void archiveEpisode(const Episode& episode);
 
-    // Retrieves episodes based on query parameters
-    // This could involve listing files, parsing metadata, and loading matching episodes.
-    // For simplicity, this might initially just load all episodes from a map or specific ones.
+    // Retrieves episodes based on query parameters from the database
     std::vector<Episode> retrieveEpisodes(const std::string& mapName, const std::string& gametypeFilter = "");
 
-    // Helper function to load an episode from a file (implementation specific)
-    bool loadEpisodeFromFile(const std::string& filePath, Episode& outEpisode);
-
-    // Helper function to save an episode to a file (implementation specific)
-    bool saveEpisodeToFile(const std::string& filePath, const Episode& episode);
+    // (File-based helpers loadEpisodeFromFile, saveEpisodeToFile, generateEpisodeFilename will be removed or commented out in .cpp)
 
 private:
-    std::string episodeStoragePath; // e.g., "rcbot/episodes/"
-    std::vector<Episode> loadedEpisodes; // In-memory cache of some loaded episodes, if needed
+    sqlite3* m_db; // SQLite database connection
+    // std::string episodeStoragePath; // No longer needed for primary storage if using DB
+    // std::vector<Episode> loadedEpisodes; // Cache might still be useful, but not part of this DB setup step
 
-    // Generates a filename for an episode based on its metadata
-    std::string generateEpisodeFilename(const EpisodeMetadata& metadata) const;
+    // Helper to execute simple SQL statements (CREATE, INSERT, UPDATE, DELETE without results)
+    bool executeSQL(const std::string& sql_statement);
+
+    // Helper to set up database schema (create tables)
+    void initializeDatabase();
 };
 
 #endif // RCBOT_LONG_TERM_MEMORY_H
