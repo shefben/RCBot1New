@@ -7,9 +7,9 @@
 
 namespace RLStateProps {
     // THIS VALUE MUST BE MANUALLY KEPT IN SYNC with features added in RCBotRLHelper::getCurrentBotState()
-    // Health, Armor, Pos(3), Vel(4), Flags(5), Ammo(5), CurrWpnID, Cooldowns(2), ObjInfo(4), Percept(2), Timers(1), TaskCompl(1), OpponentChars(6)
-    //  1   +   1  +   3   +  4   +   5    +   5    +    1    +     2      +    4    +    2     +    1     +    1      +      6       = 36 Features
-    static const int NUM_STATE_FEATURES = 36;
+    // Health, Armor, Pos(3), Vel(4), Flags(5), Ammo(5), CurrWpnID, Cooldowns(2), ObjInfo(4), Percept(2), Timers(1), TaskCompl(1), OpponentChars(7)
+    //  1   +   1  +   3   +  4   +   5    +   5    +    1    +     2      +    4    +    2     +    1     +    1      +      7       = 37 Features
+    static const int NUM_STATE_FEATURES = 37;
 }
 
 // Simplified State Representation (Example)
@@ -60,10 +60,14 @@ enum class BotActionType : int {
     TACTIC_PURSUE_OBJECTIVE,
     TACTIC_RETREAT_OR_FALLBACK,
     TACTIC_HOLD_POSITION,
-    TACTIC_USE_MACRO, // A generic action if a macro is active
-    // Potentially more specific macros if they are distinct choices
-    // TACTIC_USE_MACRO_STRAFE_JUMP,
-    // TACTIC_USE_MACRO_PEEK_COVER,
+    // Removed TACTIC_USE_MACRO, replaced by specific macro actions below
+
+    // Specific Macro Actions
+    ACTION_MACRO_STRAFE_JUMP_LEFT,
+    ACTION_MACRO_PEEK_COVER_RIGHT_QUICK,
+    ACTION_MACRO_SHORT_FORWARD_BURST,
+    ACTION_MACRO_AIM_UP_BRIEFLY,
+
     SWITCH_WEAPON_PRIMARY, // Example, could be more granular
     SWITCH_WEAPON_SECONDARY,
     SWITCH_WEAPON_MELEE,

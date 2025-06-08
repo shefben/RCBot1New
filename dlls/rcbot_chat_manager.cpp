@@ -3,41 +3,76 @@
 #include "rcbot_manager.h" // For gRCBotManager to iterate bots
 #include "rcbot_chat_history.h" // For ContextualItem, RCBotChatHistory
 #include "util.h" // For UTIL_ServerPrintf for debugging
+#include <fstream>   // For file operations
+#include <sstream>   // For stringstream
 
 // Define the global instance
 RCBotChatManager g_ChatManager;
 
 RCBotChatManager::RCBotChatManager() : m_modelsInitialized(false) {
-    // Constructor: Potentially load chat lines from a file/database in the future
-    // For now, it's empty as generateBotChat uses hardcoded examples.
+    // Constructor
+    // Populate m_category_seed_keywords
+    m_category_seed_keywords[ChatContextCategory::GENERAL_NEUTRAL] = {"the", "is", "it", "a", "yes", "no", "okay"};
+    m_category_seed_keywords[ChatContextCategory::COMBAT_EVENT_SELF_POSITIVE] = {"yes", "got", "nice", "boom", "owned", "easy", "kill", "frag"};
+    m_category_seed_keywords[ChatContextCategory::COMBAT_EVENT_SELF_NEGATIVE] = {"ouch", "no", "dang", "cover", "need", "help", "medic", "critical"};
+    m_category_seed_keywords[ChatContextCategory::COMBAT_EVENT_TEAM_POSITIVE] = {"nice", "great", "good", "job", "team", "awesome"};
+    m_category_seed_keywords[ChatContextCategory::COMBAT_EVENT_TEAM_NEGATIVE] = {"oh", "no", "watch", "out", "behind", "team", "careful"};
+    m_category_seed_keywords[ChatContextCategory::OBJECTIVE_PROGRESS_POSITIVE] = {"objective", "going", "push", "yes", "site", "bomb", "flag", "capture"};
+    m_category_seed_keywords[ChatContextCategory::OBJECTIVE_PROGRESS_NEGATIVE] = {"stop", "them", "defend", "no", "objective", "lost", "fail"};
+    m_category_seed_keywords[ChatContextCategory::OBJECTIVE_QUERY] = {"where", "what", "objective", "bomb", "flag", "status", "plan"};
+    m_category_seed_keywords[ChatContextCategory::SOCIAL_GREETING] = {"hello", "hi", "hey", "yo", "greetings", "sup"};
+    m_category_seed_keywords[ChatContextCategory::SOCIAL_THANKS_RESPONSE] = {"welcome", "no problem", "np", "anytime", "sure"};
+    m_category_seed_keywords[ChatContextCategory::SOCIAL_TAUNT_ENEMY] = {"you", "are", "too", "slow", "easy", "noob", "loser", "owned"};
+    m_category_seed_keywords[ChatContextCategory::SOCIAL_ENCOURAGE_TEAM] = {"we", "can", "do", "it", "team", "go", "push", "don't give up", "focus"};
+    m_category_seed_keywords[ChatContextCategory::DEBUG_INFO] = {"debug", "status", "report", "info", "current", "objective"};
 }
 
-void RCBotChatManager::initializeChatModels(const std::string& training_data_override) {
-    if (m_modelsInitialized && training_data_override.empty()) { // Only prevent re-init if no override
-        // UTIL_ServerPrintf("RCBotChatManager: Chat models already initialized.\n");
-        return;
+void RCBotChatManager::initializeChatModels(const std::string& training_data_filepath) {
+    // Allow re-initialization if called again, useful if training file changes or for testing
+
+    std::string training_content;
+    bool loaded_from_file = false;
+
+    if (!training_data_filepath.empty()) {
+        std::ifstream training_file(training_data_filepath);
+        if (training_file.is_open()) {
+            std::stringstream buffer;
+            buffer << training_file.rdbuf();
+            training_content = buffer.str();
+            training_file.close();
+
+            if (!training_content.empty()) {
+                loaded_from_file = true;
+                // UTIL_ServerPrintf("RCBotChatManager: Loaded training data from '%s' (%zu bytes).\n",
+                //                   training_data_filepath.c_str(), training_content.length());
+            } else {
+                // UTIL_ServerPrintf("RCBotChatManager_WARNING: Training data file '%s' was empty. Using default.\n",
+                //                   training_data_filepath.c_str());
+            }
+        } else {
+            // UTIL_ServerPrintf("RCBotChatManager_WARNING: Could not open training file '%s'. Using default.\n",
+            //                   training_data_filepath.c_str());
+        }
     }
 
-    const std::string default_training_data =
-        "Hello there. Good game everyone. Nice shot! I need help over here. "
-        "Let's go this way. Objective is clear. Enemy spotted. "
-        "Affirmative. Negative. Covering you. Thanks for the support. "
-        "That was a close call. We can win this. Don't give up. GG. Good luck next round. "
-        "Where are they? I see one. Moving now. Wait for me. "
-        "Defend this spot. Attack the objective. Good job. Well played. "
-        "He is low health. Watch out behind you. Grenade! "
-        "Follow me. Yes. No. Maybe. I don't know. What do you think? "
-        "Are you ready? Let us proceed with strategic positioning. My calculations indicate a high probability of success. "
-        "My sensors detect hostility. Engaging offensive protocols. Beep boop. Does not compute. "
-        "Why did the chicken cross the road? To get to the other side! Ha ha. "
-        "I am a robot. I like to shoot things. Pew pew pew. That is fun. ";
+    if (!loaded_from_file || training_content.length() < 20) { // Ensure default if file too small
+        if (loaded_from_file && training_content.length() < 20) {
+            // UTIL_ServerPrintf("RCBotChatManager_INFO: Training file content too short. Switching to internal default.\n");
+        }
+        // UTIL_ServerPrintf("RCBotChatManager: Using minimal internal default training data.\n");
+        training_content = "Hello there. Good game everyone. Nice shot! I need help over here. "
+                           "Let's go this way. Objective is clear. Enemy spotted. "
+                           "Affirmative. Negative. Covering you. Thanks for the support. "
+                           "That was a close call. We can win this. Don't give up. GG. Good luck next round.";
+        loaded_from_file = false; // Mark that we are using default
+    }
 
-
-    const std::string& used_training_data = training_data_override.empty() ? default_training_data : training_data_override;
-
-    m_ngramModel.buildModel(used_training_data);
+    m_ngramModel.buildModel(training_content); // Assumes m_ngramModel is RCBotNgramBase
     m_modelsInitialized = true;
-    UTIL_ServerPrintf("RCBotChatManager: N-gram chat model built (N=%d). Vocab size: %lu unique prefixes.\n", m_ngramModel.getNgramSize(), (unsigned long)0); // Add a way to get vocab size from ngram model if desired
+
+    // int ngram_size = m_ngramModel.getNgramSize(); // Requires getNgramSize() in RCBotNgramBase
+    // UTIL_ServerPrintf("RCBotChatManager: N-gram model (N=%d) built. Loaded from file: %s.\n",
+    //                   ngram_size, loaded_from_file ? "Yes" : "No");
 }
 
 
@@ -45,43 +80,82 @@ std::string RCBotChatManager::getSeedFromContext(RCBotChatHistory* chat_history,
                                                const std::string& context_trigger,
                                                float perceived_aggression,
                                                float perceived_cooperation) {
-    if (!chat_history) return "";
+    if (!chat_history) return ""; // Should not happen if called correctly
 
-    std::string seed = "";
-    const auto& window = chat_history->getContextWindow();
+    ChatContextCategory determined_category = ChatContextCategory::GENERAL_NEUTRAL;
 
-    // Try to pick last 1-2 words from the most recent chat message if available
-    for (auto it = window.rbegin(); it != window.rend(); ++it) {
-        if (it->type == ContextItemType::CHAT_MESSAGE) {
-            std::vector<std::string> tokens = m_ngramModel.tokenize(it->chat_message.message); // Use NgramModel's tokenizer for consistency
-            if (!tokens.empty()) {
-                if (tokens.size() >= 2) {
-                    seed = tokens[tokens.size() - 2] + " " + tokens.back();
-                } else {
-                    seed = tokens.back();
+    // 1. Determine category from context_trigger (most direct signal)
+    if (context_trigger == "on_kill_self") determined_category = ChatContextCategory::COMBAT_EVENT_SELF_POSITIVE;
+    else if (context_trigger == "on_death_self") determined_category = ChatContextCategory::COMBAT_EVENT_SELF_NEGATIVE;
+    else if (context_trigger == "on_bomb_planted_friendly") determined_category = ChatContextCategory::OBJECTIVE_PROGRESS_POSITIVE;
+    else if (context_trigger == "on_bomb_defused_enemy") determined_category = ChatContextCategory::OBJECTIVE_PROGRESS_NEGATIVE;
+    else if (context_trigger.find("greet") != std::string::npos) determined_category = ChatContextCategory::SOCIAL_GREETING;
+    // Add more specific trigger mappings here as needed. For example:
+    else if (context_trigger == "enemy_spotted") determined_category = ChatContextCategory::GENERAL_NEUTRAL; // Could be more specific if desired
+    else if (context_trigger == "request_help") determined_category = ChatContextCategory::COMBAT_EVENT_SELF_NEGATIVE;
+    else if (context_trigger == "thank_player") determined_category = ChatContextCategory::SOCIAL_THANKS_RESPONSE;
+
+
+    // 2. (Optional refinement) Analyze recent chat_history if no strong trigger
+    // This part can be expanded later. For now, primary focus is on context_trigger and category keywords.
+    // Example:
+    // if (determined_category == ChatContextCategory::GENERAL_NEUTRAL && chat_history && !chat_history->getContextWindow().empty()) {
+    //     const auto& last_item = chat_history->getContextWindow().back();
+    //     if (last_item.type == ContextItemType::GAME_EVENT &&
+    //         last_item.game_event_data.type == GameEventType::DAMAGE_EVENT &&
+    //         last_item.game_event_data.target_edict == bot->getEdict()) { // Assuming bot is target
+    //         determined_category = ChatContextCategory::COMBAT_EVENT_SELF_NEGATIVE;
+    //     }
+    // }
+
+    std::string seed_phrase = "";
+
+    // 3. Try to get seed from category keywords
+    auto it_keywords = m_category_seed_keywords.find(determined_category);
+    if (it_keywords != m_category_seed_keywords.end() && !it_keywords->second.empty()) {
+        const auto& keywords = it_keywords->second;
+        seed_phrase = keywords[rand() % keywords.size()]; // Pick a random keyword from the category
+    } else {
+        // Fallback to old logic: use last chat words or trigger words if no category match or empty keywords
+        const auto& window = chat_history->getContextWindow();
+        for (auto it = window.rbegin(); it != window.rend(); ++it) {
+            if (it->type == ContextItemType::CHAT_MESSAGE) {
+                std::vector<std::string> tokens = m_ngramModel.tokenize(it->chat_message.message);
+                if (!tokens.empty()) {
+                    if (tokens.size() >= 2) {
+                        seed_phrase = tokens[tokens.size() - 2] + " " + tokens.back();
+                    } else {
+                        seed_phrase = tokens.back();
+                    }
+                    break;
                 }
-                break;
+            }
+        }
+        if (seed_phrase.empty() && !context_trigger.empty() && context_trigger.rfind("generic", 0) != 0) {
+             std::vector<std::string> tokens = m_ngramModel.tokenize(context_trigger);
+             if(!tokens.empty()) seed_phrase = tokens.back(); else seed_phrase = context_trigger;
+        }
+    }
+
+    // 4. Fallback seed based on aggression/cooperation (from previous implementation)
+    if (seed_phrase.empty() || seed_phrase.length() < 3) {
+        if (perceived_aggression > 0.7f && perceived_cooperation < 0.3f) {
+            const auto& taunt_seeds_it = m_category_seed_keywords.find(ChatContextCategory::SOCIAL_TAUNT_ENEMY);
+            if (taunt_seeds_it != m_category_seed_keywords.end() && !taunt_seeds_it->second.empty()) {
+                 seed_phrase = taunt_seeds_it->second[rand() % taunt_seeds_it->second.size()];
+            } else {
+                seed_phrase = "enemy"; // Ultimate fallback if SOCIAL_TAUNT_ENEMY is not populated
+            }
+        } else if (perceived_cooperation > 0.7f && perceived_aggression < 0.3f) {
+            const auto& encourage_seeds_it = m_category_seed_keywords.find(ChatContextCategory::SOCIAL_ENCOURAGE_TEAM);
+            if (encourage_seeds_it != m_category_seed_keywords.end() && !encourage_seeds_it->second.empty()) {
+                seed_phrase = encourage_seeds_it->second[rand() % encourage_seeds_it->second.size()];
+            } else {
+                seed_phrase = "team"; // Ultimate fallback
             }
         }
     }
-    // Could also add words from context_trigger if seed is still short or empty
-    if (seed.empty() && !context_trigger.empty()) {
-        // Simple use of context_trigger; could be more elaborate
-        std::vector<std::string> trigger_tokens = m_ngramModel.tokenize(context_trigger);
-        if(!trigger_tokens.empty()) seed = trigger_tokens.back(); // last word of trigger
-    }
-
-    // New: Bias seed based on perception if context seed is weak
-    if (seed.empty() || seed.length() < 3) {
-        if (perceived_aggression > 0.7f && perceived_cooperation < 0.3f) {
-            seed = "enemy"; // Aggressive seed
-            // UTIL_ServerPrintf("RCBotChatManager: Using aggressive perception seed ('enemy') for bot %s\n", STRING(bot->getEdict()->v.netname));
-        } else if (perceived_cooperation > 0.7f && perceived_aggression < 0.3f) {
-            seed = "team";  // Cooperative seed
-            // UTIL_ServerPrintf("RCBotChatManager: Using cooperative perception seed ('team') for bot %s\n", STRING(bot->getEdict()->v.netname));
-        }
-    }
-    return seed;
+    return seed_phrase;
 }
 
 

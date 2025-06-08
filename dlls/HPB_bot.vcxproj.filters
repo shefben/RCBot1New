@@ -215,6 +215,9 @@
     <ClInclude Include="rcbot_ngram_model.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="rcbot_opponent_model.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="rcbot_rl_agent.h">
       <Filter>Header Files</Filter>
     </ClInclude>

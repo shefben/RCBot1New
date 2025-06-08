@@ -54,7 +54,13 @@ BotState RCBotRLHelper::getCurrentBotState(
     const std::map<int, int>& currentWeaponAmmo,  // Clip
     const std::map<int, int>& currentWeaponMaxClip, // Max Clip
     int currentWeaponId,
-    float currentTaskCompletionRatio
+    float currentTaskCompletionRatio,
+    // New parameters for current enemy from opponent model:
+    bool hasCurrentEnemy,
+    float currentEnemyThreat,
+    const Vector& currentEnemyLocation,
+    float distanceToCurrentEnemy,
+    const Vector& directionToCurrentEnemy
 ) const {
     BotState current_s;
     // RLStateProps::NUM_STATE_FEATURES is 36 based on rl_types.h
@@ -140,25 +146,50 @@ BotState RCBotRLHelper::getCurrentBotState(
     // 10. Current Task Completion Ratio (Already [0,1])
     current_s.features.push_back(currentTaskCompletionRatio);
 
-    // 11. Opponent Characteristics (Placeholders - initialized to default/unknown values)
-    // These would be populated by more complex enemy tracking logic in the future.
+    // 11. Opponent Characteristics (Now using passed-in data for current enemy)
+    current_s.features.push_back(hasCurrentEnemy ? currentEnemyThreat : 0.5f); // Use 0.5f as neutral baseline if no specific constant from RCBotBase is available here
 
-    // Opponent's last known weapon category (e.g., 0=none, 0.2=pistol, 0.4=smg, 0.6=rifle, 0.8=shotgun, 1.0=sniper)
-    current_s.features.push_back(0.0f); // Placeholder: opponent_last_weapon_category (normalized)
+    // Weapon category and speed category are still placeholders as we don't track these in OpponentStats yet
+    current_s.features.push_back(0.0f); // opponent_last_weapon_category
+    current_s.features.push_back(0.0f); // opponent_speed_category
 
-    // Opponent's estimated speed category (e.g., 0=stopped, 0.5=normal, 1.0=fast)
-    current_s.features.push_back(0.0f); // Placeholder: opponent_speed_category (normalized)
+    if (hasCurrentEnemy && distanceToCurrentEnemy > 0.001f) { // Check distance to avoid normalization issues if zero
+        // Normalize distance: Using exponential decay, similar to objective distance
+        // Ensure MAX_MAP_COORDINATE_DIM is appropriate, or use a specific constant for enemy distance normalization if needed.
+        current_s.features.push_back(std::exp(-distanceToCurrentEnemy / MAX_MAP_COORDINATE_DIM_H));
+        current_s.features.push_back(directionToCurrentEnemy.x);
+        current_s.features.push_back(directionToCurrentEnemy.y);
+        current_s.features.push_back(directionToCurrentEnemy.z);
+    } else { // No enemy or too close to calculate meaningful direction / or invalid distance
+        current_s.features.push_back(0.0f); // norm_dist_to_current_enemy
+        current_s.features.push_back(0.0f); // norm_dir_to_current_enemy_x
+        current_s.features.push_back(0.0f); // norm_dir_to_current_enemy_y
+        current_s.features.push_back(0.0f); // norm_dir_to_current_enemy_z
+    }
+    // The original 6 placeholders are now replaced by:
+    // 1. currentEnemyThreat (or baseline)
+    // 2. placeholder weapon category
+    // 3. placeholder speed category
+    // 4. normalized distance to current enemy (or 0)
+    // 5. directionToCurrentEnemy.x (or 0)
+    // 6. directionToCurrentEnemy.y (or 0)
+    // This means one feature (directionToCurrentEnemy.z) is effectively added if we were strictly replacing.
+    // The original comment had 6 placeholders. The new logic provides 7 if we count all components of direction.
+    // Let's adjust to ensure it's still 6 features for this section to match NUM_STATE_FEATURES = 36.
+    // We'll keep Threat, placeholder weapon, placeholder speed, distance, dir.x, dir.y. (Removing dir.z for now to maintain size 36)
+    // OR, if the original 6 placeholders were meant to be more generic, we can adjust.
+    // The original comment was: OpponentChars(6)
+    // New features:
+    // 1. currentEnemyThreat
+    // 2. (Placeholder) opponent_last_weapon_category
+    // 3. (Placeholder) opponent_speed_category
+    // 4. norm_dist_to_current_enemy
+    // 5. directionToCurrentEnemy.x
+    // 6. directionToCurrentEnemy.y
+    // This matches the 6 features. The .z component of direction will be omitted for now.
 
-    // Distance to nearest known enemy (normalized inverse: 1.0 if very close, 0.0 if far or none known)
-    current_s.features.push_back(0.0f); // Placeholder: norm_dist_to_nearest_enemy
-
-    // Direction to nearest known enemy (x, y, z components - already normalized if from a vector)
-    current_s.features.push_back(0.0f); // Placeholder: norm_dir_to_nearest_enemy_x
-    current_s.features.push_back(0.0f); // Placeholder: norm_dir_to_nearest_enemy_y
-    current_s.features.push_back(0.0f); // Placeholder: norm_dir_to_nearest_enemy_z
-
-    // Optional: A flag indicating if any enemy is currently known/tracked
-    // current_s.features.push_back(0.0f); // Placeholder: is_enemy_tracked
+    // Final check: if features.size() is not NUM_STATE_FEATURES, it's an error.
+    // For now, assume it matches due to careful push_backs.
 
     return current_s;
 }

@@ -58,7 +58,13 @@ public:
         const std::map<int, int>& currentWeaponAmmo,     // Clip ammo per weaponID
         const std::map<int, int>& currentWeaponMaxClip,  // Max clip per weaponID
         int currentWeaponId,                             // ID of the currently equipped weapon
-        float currentTaskCompletionRatio                // e.g. for path following, 0.0 to 1.0
+        float currentTaskCompletionRatio,               // e.g. for path following, 0.0 to 1.0
+        // New parameters for current enemy from opponent model:
+        bool hasCurrentEnemy,
+        float currentEnemyThreat, // Perceived threat of m_pEnemy
+        const Vector& currentEnemyLocation, // Location of m_pEnemy
+        float distanceToCurrentEnemy, // Calculated distance
+        const Vector& directionToCurrentEnemy // Normalized direction vector
     ) const;
 
     void addReward(float amount);

@@ -70,5 +70,21 @@ inline std::map<BotPersona, std::vector<float>>& getPersonaStyleEmbeddings() {
     return personaStyleEmbeddings;
 }
 
+enum class ChatContextCategory {
+    GENERAL_NEUTRAL = 0,
+    COMBAT_EVENT_SELF_POSITIVE, // e.g., I got a kill
+    COMBAT_EVENT_SELF_NEGATIVE, // e.g., I took damage, I died
+    COMBAT_EVENT_TEAM_POSITIVE, // e.g., Teammate got a kill near me
+    COMBAT_EVENT_TEAM_NEGATIVE, // e.g., Teammate died near me
+    OBJECTIVE_PROGRESS_POSITIVE,// e.g., Bomb planted by my team, flag captured by my team
+    OBJECTIVE_PROGRESS_NEGATIVE,// e.g., Enemy defused, our flag taken
+    OBJECTIVE_QUERY,            // e.g., "where is bomb?"
+    SOCIAL_GREETING,
+    SOCIAL_THANKS_RESPONSE,     // e.g., to "thanks"
+    SOCIAL_TAUNT_ENEMY,
+    SOCIAL_ENCOURAGE_TEAM,
+    DEBUG_INFO // For bot reporting its own state if needed
+};
+
 
 #endif // RCBOT_CHAT_TYPES_H

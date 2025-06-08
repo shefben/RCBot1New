@@ -13,8 +13,8 @@ public:
     RCBotChatManager();
 
     // Initializes the N-gram model with training data.
-    // training_data_override can be used to supply custom training text.
-    void initializeChatModels(const std::string& training_data_override = "");
+    // training_data_filepath is the path to the file containing training text.
+    void initializeChatModels(const std::string& training_data_filepath);
 
     // Generates a chat message for a bot based on context and persona
     // Context_trigger is a string indicating why the chat is being generated (e.g., "on_kill", "enemy_spotted")
@@ -41,6 +41,7 @@ private:
                                    float perceived_cooperation);
 
     SentimentAnalyzer m_sentimentAnalyzer; // Sentiment analyzer instance
+    std::map<ChatContextCategory, std::vector<std::string>> m_category_seed_keywords; // For categorized seed words
     // std::map<BotPersona, std::map<ChatSentiment, std::vector<std::string>>> m_chatLines; // Future use for more structured chat
 };
 

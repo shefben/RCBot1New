@@ -291,6 +291,7 @@
     <ClInclude Include="rcbot_mod.h" />
     <ClInclude Include="rcbot_navigator.h" />
     <ClInclude Include="rcbot_ngram_model.h" />
+    <ClInclude Include="rcbot_opponent_model.h" />
     <ClInclude Include="rcbot_profile.h" />
     <ClInclude Include="rcbot_rl_agent.h" />
     <ClInclude Include="rcbot_dynamic_objectives.h" />

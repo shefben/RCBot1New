@@ -65,6 +65,7 @@ public:
     void update(RCBotBase* bot, float flTimeDelta); // flTimeDelta is frame time
     bool isFinished() const;
     void reset();
+    std::string getName() const { return m_name; } // Added getter for macro name
 };
 
 #endif // RCBOT_MACRO_ACTION_H

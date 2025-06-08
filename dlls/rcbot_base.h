@@ -16,6 +16,7 @@
 #include "rl_types.h"           // For BotState, BotActionType, RLTransition
 #include "RCBotRLHelper.h"      // For RCBotRLHelper
 #include "rcbot_rl_agent.h"     // For RCBotRLAgent
+#include "rcbot_opponent_model.h" // For OpponentStats
 #include <deque>                // For std::deque
 
 class RCBotProfile;
@@ -231,6 +232,10 @@ private:
     static const float RL_LEARN_INTERVAL = 0.5f;
     std::string getRLModelFilename() const;
 
+    // Opponent Modeling Data
+    std::map<int, OpponentStats> m_opponent_models; // Key: player_unique_id (e.g., from GETPLAYERUSERID)
+    float m_lastThreatUpdateTime;
+
     // Dynamic Objective Interaction State
     ObjectiveInteractionType m_currentObjectiveInteractionType;
     float m_objectiveInteractionDuration; // For timed interactions like USE_FOR_DURATION
@@ -340,6 +345,13 @@ public: // Constants for Entity Interaction Novelty
 
 public: // Game Event Recording
     void recordGameEvent(const GameEvent& event);
+    void ProcessDeathInvolvingBot(edict_t* pOtherPlayer, bool bBotWasKilled, const Vector& deathLocation); // For opponent modeling
+
+public: // Constants for Opponent Modeling
+    static const float THREAT_FROM_DAMAGE_FACTOR = 0.01f;
+    static const float THREAT_FROM_KILL_FACTOR = 0.2f;
+    static const float THREAT_DECAY_RATE = 0.99f; // Per Think cycle for tracked opponents
+    static const float THREAT_UPDATE_INTERVAL = 1.0f; // Seconds, how often to recalc threat
 
 private: // Make persona private and expose via getter/setter
 	BotPersona m_persona;

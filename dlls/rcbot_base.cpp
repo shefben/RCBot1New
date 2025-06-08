@@ -1,5 +1,6 @@
 // Test comment for no-op edit
 #include "rcbot_base.h"
+#include "enginecallback.h" // For g_engfuncs
 #include "extdll.h"
 #include "meta_api.h"
 #include "dll.h"
@@ -31,6 +32,16 @@
 #include <limits>
 #include <cmath>
 #include <cfloat> // For FLT_MAX, though std::numeric_limits is preferred if available
+
+// Static helper function to get player unique ID
+static int GetPlayerUniqueIdFromEdict_Static(edict_t* pEdict) {
+    if (pEdict && pEdict->pvPrivateData != NULL && (pEdict->v.flags & FL_CLIENT) && !(pEdict->v.flags & FL_FAKECLIENT)) {
+        if (g_engfuncs.pfnGetPlayerUserId) { // Check if engine function is available
+            return (*g_engfuncs.pfnGetPlayerUserId)(pEdict);
+        }
+    }
+    return -1; // Invalid ID for non-players or if function unavailable
+}
 
 // Constants for Dynamic Objective Selection
 static const float MIN_CONFIDENCE_FOR_DYNAMIC_OBJECTIVE = 0.3f;
@@ -66,6 +77,7 @@ RCBotBase::RCBotBase() :
     // Initialize members from all previous subtasks that should be here
     m_pLongTermMemory = nullptr;
     m_lastLearnTime = 0.0f; // Initialize last learn time
+    m_lastThreatUpdateTime = 0.0f; // Initialize last threat update time
     m_curiosityScore = 0.0f;
     m_currentFocusObjective = "";
     m_currentObjectiveFocusID = "";
@@ -131,6 +143,7 @@ void RCBotBase::spawnInit()
     m_replayBuffer.clear();
     m_seenEntityFeaturesLog.clear();
     m_chatContextMemory.clear();
+    m_opponent_models.clear(); // Clear opponent models on spawn/new round
 
     m_curiosityScore = 0.0f;
     m_itemCuriosity.clear();
@@ -175,6 +188,7 @@ void RCBotBase::spawnInit()
     m_debug_sim_enemy_flag_team_id = 0;
 
     m_lastLearnTime = gpGlobals ? gpGlobals->time : 0.0f;
+    m_lastThreatUpdateTime = gpGlobals ? gpGlobals->time : 0.0f;
     m_rlAgent.loadModel(getRLModelFilename()); // Attempt to load model
 }
 
@@ -315,9 +329,48 @@ void RCBotBase::Think()
     int currentWeaponIdVal = 0; // Placeholder
     if (m_pCurrentWeapon) {
         currentWeaponIdVal = m_pCurrentWeapon->m_iId;
-        // TODO: Populate ammo maps by iterating m_pWeapons->m_Weapons
+        // TODO: Populate ammo maps by iterating m_pWeapons->m_Weapons for currentWeaponAmmoMap and currentWeaponMaxClipMap
     }
     float taskCompletionRatio = 0.0f; // Placeholder for path following, etc.
+
+    // --- Gather Current Enemy Data for BotState ---
+    bool bot_has_current_enemy = false;
+    float bot_current_enemy_threat = 0.5f; // Neutral baseline, using literal as OPPONENT_THREAT_NEUTRAL_BASELINE is not static in RCBotBase
+    Vector bot_current_enemy_location(0,0,0);
+    float bot_distance_to_current_enemy = -1.0f; // Using -1 to indicate no valid distance
+    Vector bot_direction_to_current_enemy(0,0,0);
+
+    edict_t* current_enemy_edict = m_pEnemy.Get();
+    if (current_enemy_edict && m_pEdict && isAlive() && current_enemy_edict->v.deadflag == DEAD_NO) {
+        int enemy_id = GetPlayerUniqueIdFromEdict_Static(current_enemy_edict);
+        if (enemy_id != -1) { // It's a human player
+            auto it = m_opponent_models.find(enemy_id);
+            if (it != m_opponent_models.end()) {
+                const OpponentStats& enemy_stats = it->second;
+                bot_current_enemy_threat = enemy_stats.perceived_threat_level;
+                bot_current_enemy_location = current_enemy_edict->v.origin;
+                bot_has_current_enemy = true;
+            } else {
+                bot_current_enemy_location = current_enemy_edict->v.origin;
+                bot_has_current_enemy = true;
+                // bot_current_enemy_threat remains neutral baseline (0.5f)
+            }
+        } else { // Is an enemy, but not a human player (e.g. monster)
+            bot_current_enemy_location = current_enemy_edict->v.origin;
+            bot_has_current_enemy = true;
+            // bot_current_enemy_threat remains neutral baseline (0.5f) for non-modeled entities
+        }
+
+        if (bot_has_current_enemy) {
+            bot_distance_to_current_enemy = (bot_current_enemy_location - m_pEdict->v.origin).Length();
+            if (bot_distance_to_current_enemy > 0.01f) {
+                bot_direction_to_current_enemy = (bot_current_enemy_location - m_pEdict->v.origin).NormalizeSafe();
+            } else {
+                bot_distance_to_current_enemy = 0.0f; // Set to 0 if very close
+            }
+        }
+    }
+    // --- End Gather Current Enemy Data ---
 
     if (!m_firstThinkCycle && m_pEdict) {
         s_prime = m_rlHelper.getCurrentBotState(
@@ -334,7 +387,13 @@ void RCBotBase::Think()
             currentWeaponAmmoMap,
             currentWeaponMaxClipMap,
             currentWeaponIdVal,
-            taskCompletionRatio
+            taskCompletionRatio,
+            // New args:
+            bot_has_current_enemy,
+            bot_current_enemy_threat,
+            bot_current_enemy_location,
+            bot_distance_to_current_enemy,
+            bot_direction_to_current_enemy
         );
 
         reward_for_last_transition = m_rlHelper.getAccumulatedRewardAndReset();
@@ -441,6 +500,22 @@ void RCBotBase::Think()
         }
     }
     // --- End RL Agent Action Selection ---
+
+    // --- Conceptual Opponent Model Influence on Tactics ---
+    // if (bot_has_current_enemy && bot_current_enemy_threat > 0.8f) {
+    //     // If current RL action is aggressive (e.g., TACTIC_ENGAGE_ENEMY),
+    //     // consider overriding to a more cautious action if not already.
+    //     // This is a placeholder for how direct modeling could override or bias RL.
+    //     // For example:
+    //     // if (m_chosenAIActionThisFrame == BotActionType::TACTIC_ENGAGE_ENEMY && m_pEdict->v.health < 50) {
+    //     //     m_chosenAIActionThisFrame = BotActionType::TACTIC_RETREAT_OR_FALLBACK; // Override
+    //     //     UTIL_ServerPrintf("Bot %s overriding to FALLBACK due to high threat enemy (%.2f) and low health.\n", STRING(m_pEdict->v.netname), bot_current_enemy_threat);
+    //     // }
+    // }
+    // Target selection (m_pEnemy assignment) could also be influenced by these stats
+    // in the newVisible() or other enemy acquisition logic. (TODO)
+    // --- End Conceptual Opponent Model Influence ---
+
 
     // --- Determine Interaction Type and Dispatch Schedule (Part 2: Dispatch) ---
     if (pursued_dynamic_objective_this_frame && !m_currentObjectiveFocusID.empty()) { // m_currentObjectiveFocusID is set if obj_meta was valid
@@ -834,7 +909,13 @@ void RCBotBase::Think()
             currentWeaponAmmoMap,
             currentWeaponMaxClipMap,
             currentWeaponIdVal,
-            taskCompletionRatio
+            taskCompletionRatio,
+            // New args:
+            bot_has_current_enemy,
+            bot_current_enemy_threat,
+            bot_current_enemy_location,
+            bot_distance_to_current_enemy,
+            bot_direction_to_current_enemy
         );
         m_firstThinkCycle = false;
     } else if (m_pEdict) { // ensure s_prime was computed if !m_firstThinkCycle
@@ -859,6 +940,25 @@ void RCBotBase::Think()
        }
     }
     // --- End RL Agent Learning Step ---
+
+    // --- Opponent Threat Decay Logic ---
+    if (gpGlobals && (gpGlobals->time - m_lastThreatUpdateTime > THREAT_UPDATE_INTERVAL)) {
+        for (auto& pair : m_opponent_models) {
+            OpponentStats& stats = pair.second;
+            // Only decay if no very recent encounter
+            if (gpGlobals->time - stats.last_encounter_time > THREAT_UPDATE_INTERVAL * 1.5f) {
+                stats.perceived_threat_level *= THREAT_DECAY_RATE;
+                // Decay towards baseline instead of zero - more complex, stick to simple decay for now
+                // stats.perceived_threat_level = stats.perceived_threat_level * THREAT_DECAY_RATE +
+                //                                RCBotBase::OPPONENT_THREAT_NEUTRAL_BASELINE * (1.0f - THREAT_DECAY_RATE);
+                if (stats.perceived_threat_level < 0.01f) { // Using a small epsilon rather than OPPONENT_MIN_THREAT if it's 0.0
+                    stats.perceived_threat_level = 0.0f;
+                }
+            }
+        }
+        m_lastThreatUpdateTime = gpGlobals->time;
+    }
+    // --- End Opponent Threat Decay Logic ---
 }
 
 #define BOT_MOVE_TO_MIN_DISTANCE 16.0f
@@ -1123,14 +1223,100 @@ void RCBotBase::recordGameEvent(const GameEvent& event)
     m_shortTermMemory.addEvent(event);
 
     // Also add to contextual chat/event history
-    if (m_chatContextMemory.getMaxItems() > 0) { // Check if context memory is active
+    if (m_chatContextMemory.getMaxItems() > 0) {
         ContextualItem context_item;
-        context_item.type = GAME_EVENT_ITEM;
+        context_item.type = GAME_EVENT_ITEM; // Ensure this is GAME_EVENT_ITEM or similar
         context_item.timestamp = event.timestamp;
-        context_item.game_event_data = event; // Copy the event data
+        context_item.game_event_data = event;
         m_chatContextMemory.addItem(context_item);
     }
+
+    // --- Opponent Modeling based on Damage Event ---
+    if (game_event.type == GameEventType::DAMAGE_EVENT && gpGlobals && g_engfuncs.pfnGetPlayerUserId) { // Changed event to game_event
+        edict_t* pAttacker = game_event.attacker_edict;
+        edict_t* pTarget = game_event.target_edict;
+
+        // Case 1: Bot took damage from a human player
+        if (pTarget == m_pEdict && pAttacker && pAttacker != m_pEdict) { // Check if attacker is not self
+            int attacker_player_id = GetPlayerUniqueIdFromEdict_Static(pAttacker); // Use static helper
+
+            if (attacker_player_id != -1) { // Attacker is a human player
+                OpponentStats& stats = m_opponent_models[attacker_player_id];
+
+                if (stats.player_unique_id == 0) { // New entry
+                    stats.player_unique_id = attacker_player_id;
+                    // stats.perceived_threat_level = RCBotBase::OPPONENT_THREAT_NEUTRAL_BASELINE; // Use constant from .h
+                    // stats.perceived_friendliness = 0.5f; // Default from struct
+                }
+
+                stats.last_known_name = STRING(pAttacker->v.netname);
+                stats.damage_dealt_to_bot += game_event.damageAmount;
+                stats.last_encounter_time = gpGlobals->time;
+                stats.last_known_location = pAttacker->v.origin;
+
+                stats.perceived_threat_level += game_event.damageAmount * RCBotBase::THREAT_FROM_DAMAGE_FACTOR; // Use constant from .h
+                stats.perceived_threat_level = std::min(stats.perceived_threat_level, 1.0f); // Using 1.0f as MAX_THREAT
+
+                // UTIL_ServerPrintf("Bot %s took %.1f dmg from player %s (ID %d). Threat: %.2f\n",
+                //    STRING(m_pEdict->v.netname), game_event.damageAmount, stats.last_known_name.c_str(), attacker_player_id, stats.perceived_threat_level);
+            }
+        }
+        // Case 2: Bot dealt damage to a human player
+        else if (pAttacker == m_pEdict && pTarget && pTarget != m_pEdict) { // Check if target is not self
+            int target_player_id = GetPlayerUniqueIdFromEdict_Static(pTarget); // Use static helper
+
+            if (target_player_id != -1) { // Target is a human player
+                OpponentStats& stats = m_opponent_models[target_player_id];
+
+                if (stats.player_unique_id == 0) { // New entry
+                    stats.player_unique_id = target_player_id;
+                    // stats.perceived_threat_level = RCBotBase::OPPONENT_THREAT_NEUTRAL_BASELINE;
+                    // stats.perceived_friendliness = 0.5f;
+                }
+
+                stats.last_known_name = STRING(pTarget->v.netname);
+                stats.damage_taken_from_bot += game_event.damageAmount;
+                stats.last_encounter_time = gpGlobals->time;
+                stats.last_known_location = pTarget->v.origin;
+            }
+        }
+    }
 }
+
+void RCBotBase::ProcessDeathInvolvingBot(edict_t* pOtherPlayer, bool bBotWasKilled, const Vector& deathLocation) {
+    if (!pOtherPlayer || !m_pEdict || !gpGlobals || !g_engfuncs.pfnGetPlayerUserId) {
+        return;
+    }
+
+    // Ensure the "other player" is a human player
+    if ((pOtherPlayer->v.flags & FL_CLIENT) && !(pOtherPlayer->v.flags & FL_FAKECLIENT)) {
+        int other_player_id = (*g_engfuncs.pfnGetPlayerUserId)(pOtherPlayer);
+        if (other_player_id == -1) {
+            return; // Invalid ID
+        }
+
+        OpponentStats& stats = m_opponent_models[other_player_id]; // Creates if not exists
+        stats.player_unique_id = other_player_id; // Ensure it's set if new entry
+        stats.last_known_name = STRING(pOtherPlayer->v.netname);
+        stats.last_encounter_time = gpGlobals->time;
+        // deathLocation is where the victim died. If bot was attacker, this is victim's loc. If bot was victim, this is bot's loc.
+        stats.last_known_location = deathLocation;
+
+        if (bBotWasKilled) { // Bot was killed by pOtherPlayer
+            stats.kills_by_opponent_on_bot++;
+            stats.perceived_threat_level += THREAT_FROM_KILL_FACTOR;
+            stats.perceived_threat_level = std::min(1.0f, stats.perceived_threat_level); // Clamp
+        } else { // Bot killed pOtherPlayer
+            stats.kills_by_bot_on_opponent++;
+            // Killing an opponent might slightly reduce their perceived threat to the bot,
+            // or it could be handled by more complex threat evaluation logic.
+            // For now, let's slightly decrease it, but not below a minimum (e.g., 0.1 if they were a threat before).
+            stats.perceived_threat_level -= THREAT_FROM_KILL_FACTOR * 0.5f;
+            stats.perceived_threat_level = std::max(0.0f, stats.perceived_threat_level); // Clamp
+        }
+    }
+}
+
 
 // --- Chat Related Methods ---
 void RCBotBase::sayChat(const std::string& context_trigger) {
