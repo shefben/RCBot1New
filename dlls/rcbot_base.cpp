@@ -232,14 +232,19 @@ void RCBotBase::setAmmo(uint8_t index, uint8_t amount)
 
 void RCBotBase::Think()
 {
-	// Placeholder: Example of where game events could be recorded
-    // if (/* some event like taking damage happened */) {
-    //     GameEvent event(DAMAGE_EVENT, gpGlobals->time, /* damage amount */);
-    //     recordGameEvent(event);
-    // }
-    // if (/* some event like hearing a sound happened */) {
-    //     GameEvent event(HEAR_SOUND_EVENT, gpGlobals->time, /* sound origin */);
-    //     recordGameEvent(event);
+	// Example of recording a game event: Bot firing weapon
+	if (m_pEdict && (m_pEdict->v.button & IN_ATTACK) && m_pCurrentWeapon && gpGlobals) {
+		// Construct event specific to weapon firing
+        GameEvent fire_event(EVENT_WEAPON_FIRE, gpGlobals->time);
+        fire_event.edict_source = m_pEdict;
+        // Store weapon ID or some identifier in int_data1 or float_data1 if needed
+        // fire_event.int_data1 = m_pCurrentWeapon->m_iId;
+		recordGameEvent(fire_event);
+	}
+    // Example: Bot sighting an enemy (actual call would be in newVisible or similar logic)
+    // if (m_pEnemy.Get() && /* logic for new sight */ gpGlobals) {
+    //    GameEvent sight_event = GameEvent::EnemySighted(gpGlobals->time, m_pEnemy.Get());
+    //    recordGameEvent(sight_event);
     // }
 
 	// Increment timers
@@ -1232,64 +1237,63 @@ void RCBotBase::recordGameEvent(const GameEvent& event)
     }
 
     // --- Opponent Modeling based on Damage Event ---
-    if (game_event.type == GameEventType::DAMAGE_EVENT && gpGlobals && g_engfuncs.pfnGetPlayerUserId) { // Changed event to game_event
-        edict_t* pAttacker = game_event.attacker_edict;
-        edict_t* pTarget = game_event.target_edict;
+    // Corrected to use 'event' parameter and GameEvent structure
+    if ((event.type == EVENT_DAMAGE_TAKEN || event.type == EVENT_DAMAGE_DEALT) && gpGlobals && g_engfuncs.pfnGetPlayerUserId) {
+        edict_t* pAttacker = event.edict_source;
+        edict_t* pVictimOrTarget = event.edict_target; // Victim if damage taken, Target if damage dealt
+        float damageAmount = event.float_data1;
 
         // Case 1: Bot took damage from a human player
-        if (pTarget == m_pEdict && pAttacker && pAttacker != m_pEdict) { // Check if attacker is not self
-            int attacker_player_id = GetPlayerUniqueIdFromEdict_Static(pAttacker); // Use static helper
+        if (event.type == EVENT_DAMAGE_TAKEN && pVictimOrTarget == m_pEdict && pAttacker && pAttacker != m_pEdict) {
+            int attacker_player_id = GetPlayerUniqueIdFromEdict_Static(pAttacker);
 
             if (attacker_player_id != -1) { // Attacker is a human player
                 OpponentStats& stats = m_opponent_models[attacker_player_id];
 
                 if (stats.player_unique_id == 0) { // New entry
                     stats.player_unique_id = attacker_player_id;
-                    // stats.perceived_threat_level = RCBotBase::OPPONENT_THREAT_NEUTRAL_BASELINE; // Use constant from .h
-                    // stats.perceived_friendliness = 0.5f; // Default from struct
                 }
 
                 stats.last_known_name = STRING(pAttacker->v.netname);
-                stats.damage_dealt_to_bot += game_event.damageAmount;
+                stats.damage_dealt_to_bot += damageAmount;
                 stats.last_encounter_time = gpGlobals->time;
                 stats.last_known_location = pAttacker->v.origin;
-
-                stats.perceived_threat_level += game_event.damageAmount * RCBotBase::THREAT_FROM_DAMAGE_FACTOR; // Use constant from .h
-                stats.perceived_threat_level = std::min(stats.perceived_threat_level, 1.0f); // Using 1.0f as MAX_THREAT
+                stats.perceived_threat_level += damageAmount * RCBotBase::THREAT_FROM_DAMAGE_FACTOR;
+                stats.perceived_threat_level = std::min(stats.perceived_threat_level, 1.0f); // Clamp to MAX_THREAT (assumed 1.0f)
 
                 // UTIL_ServerPrintf("Bot %s took %.1f dmg from player %s (ID %d). Threat: %.2f\n",
-                //    STRING(m_pEdict->v.netname), game_event.damageAmount, stats.last_known_name.c_str(), attacker_player_id, stats.perceived_threat_level);
+                //    STRING(m_pEdict->v.netname), damageAmount, stats.last_known_name.c_str(), attacker_player_id, stats.perceived_threat_level);
             }
         }
         // Case 2: Bot dealt damage to a human player
-        else if (pAttacker == m_pEdict && pTarget && pTarget != m_pEdict) { // Check if target is not self
-            int target_player_id = GetPlayerUniqueIdFromEdict_Static(pTarget); // Use static helper
+        else if (event.type == EVENT_DAMAGE_DEALT && pAttacker == m_pEdict && pVictimOrTarget && pVictimOrTarget != m_pEdict) {
+            int target_player_id = GetPlayerUniqueIdFromEdict_Static(pVictimOrTarget);
 
             if (target_player_id != -1) { // Target is a human player
                 OpponentStats& stats = m_opponent_models[target_player_id];
 
                 if (stats.player_unique_id == 0) { // New entry
                     stats.player_unique_id = target_player_id;
-                    // stats.perceived_threat_level = RCBotBase::OPPONENT_THREAT_NEUTRAL_BASELINE;
-                    // stats.perceived_friendliness = 0.5f;
                 }
 
-                stats.last_known_name = STRING(pTarget->v.netname);
-                stats.damage_taken_from_bot += game_event.damageAmount;
+                stats.last_known_name = STRING(pVictimOrTarget->v.netname);
+                stats.damage_taken_from_bot += damageAmount; // This is damage bot dealt TO target
                 stats.last_encounter_time = gpGlobals->time;
-                stats.last_known_location = pTarget->v.origin;
+                stats.last_known_location = pVictimOrTarget->v.origin;
+                // Dealing damage doesn't directly increase threat OF the target, but confirms interaction and updates stats.
+                // Threat of target is how much they threaten the bot, not how much bot threatens them.
             }
         }
     }
 }
 
 void RCBotBase::ProcessDeathInvolvingBot(edict_t* pOtherPlayer, bool bBotWasKilled, const Vector& deathLocation) {
-    if (!pOtherPlayer || !m_pEdict || !gpGlobals || !g_engfuncs.pfnGetPlayerUserId) {
+    if (!pOtherPlayer || !m_pEdict || !gpGlobals || !g_engfuncs.pfnGetPlayerUserId) { // Check m_pEdict
         return;
     }
 
     // Ensure the "other player" is a human player
-    if ((pOtherPlayer->v.flags & FL_CLIENT) && !(pOtherPlayer->v.flags & FL_FAKECLIENT)) {
+    if ((pOtherPlayer->v.flags & FL_CLIENT) && !(pOtherPlayer->v.flags & FL_FAKECLIENT) && pOtherPlayer != m_pEdict) { // Ensure not self
         int other_player_id = (*g_engfuncs.pfnGetPlayerUserId)(pOtherPlayer);
         if (other_player_id == -1) {
             return; // Invalid ID
@@ -1299,22 +1303,72 @@ void RCBotBase::ProcessDeathInvolvingBot(edict_t* pOtherPlayer, bool bBotWasKill
         stats.player_unique_id = other_player_id; // Ensure it's set if new entry
         stats.last_known_name = STRING(pOtherPlayer->v.netname);
         stats.last_encounter_time = gpGlobals->time;
-        // deathLocation is where the victim died. If bot was attacker, this is victim's loc. If bot was victim, this is bot's loc.
         stats.last_known_location = deathLocation;
 
+        GameEvent death_event;
         if (bBotWasKilled) { // Bot was killed by pOtherPlayer
             stats.kills_by_opponent_on_bot++;
             stats.perceived_threat_level += THREAT_FROM_KILL_FACTOR;
             stats.perceived_threat_level = std::min(1.0f, stats.perceived_threat_level); // Clamp
+
+            death_event = GameEvent(EVENT_PLAYER_DIED, gpGlobals->time); // Bot is a player
+            death_event.edict_target = m_pEdict; // Victim
+            death_event.edict_source = pOtherPlayer; // Killer
         } else { // Bot killed pOtherPlayer
             stats.kills_by_bot_on_opponent++;
-            // Killing an opponent might slightly reduce their perceived threat to the bot,
-            // or it could be handled by more complex threat evaluation logic.
-            // For now, let's slightly decrease it, but not below a minimum (e.g., 0.1 if they were a threat before).
             stats.perceived_threat_level -= THREAT_FROM_KILL_FACTOR * 0.5f;
             stats.perceived_threat_level = std::max(0.0f, stats.perceived_threat_level); // Clamp
+
+            death_event = GameEvent(EVENT_PLAYER_DIED, gpGlobals->time);
+            death_event.edict_target = pOtherPlayer; // Victim
+            death_event.edict_source = m_pEdict;    // Killer
         }
+        recordGameEvent(death_event); // Record the death event
     }
+}
+
+// Game-specific event handling entry points
+void RCBotBase::BotTakeDamage(edict_t* pInflictor, edict_t* pAttacker, float flDamage, int bitsDamageType) {
+    if (!m_pEdict || !gpGlobals) return;
+
+    // Create a game event for damage taken
+    // Note: GameEvent::DamageTaken is a static helper from the .h file.
+    // We need to ensure it's correctly defined or construct manually.
+    // Assuming manual construction for now to match the .h:
+    GameEvent damage_event(EVENT_DAMAGE_TAKEN, gpGlobals->time);
+    damage_event.float_data1 = flDamage;
+    damage_event.edict_source = pAttacker; // The one who dealt damage
+    damage_event.edict_target = m_pEdict;  // The one who took damage (the bot)
+    // damage_event.int_data1 = bitsDamageType; // Optional: store damage type if needed
+
+    recordGameEvent(damage_event);
+
+    // The original takeDamage logic (like RL penalties) is already in Think() based on health changes.
+    // This function specifically records the event for STM and potentially other systems.
+}
+
+void RCBotBase::BotKilled(edict_t* pKiller, int realVictimIsKiller) {
+    if (!m_pEdict || !gpGlobals) return;
+
+    // Create a game event for bot death
+    GameEvent killed_event(EVENT_PLAYER_DIED, gpGlobals->time); // Bot is a player
+    killed_event.edict_target = m_pEdict;  // The bot is the victim
+    killed_event.edict_source = pKiller;   // The entity that killed the bot
+    // killed_event.int_data1 = realVictimIsKiller; // Optional: store gib status or similar
+
+    recordGameEvent(killed_event);
+
+    // Call ProcessDeathInvolvingBot to update opponent model if killer is a human player
+    // Note: The original Killed() might have also called ProcessDeathInvolvingBot.
+    // Ensure no double processing if this BotKilled is called AND the manager's ProcessPlayerDeathEvent calls it too.
+    // For now, assuming this is the primary path for bot's own death event that should update models.
+    if (pKiller && pKiller != m_pEdict) { // If killed by someone else
+         ProcessDeathInvolvingBot(pKiller, true /*bot was killed*/, m_pEdict->v.origin);
+    }
+
+
+    // Original death logic (RL penalty, spawnInit) is in Think() when it detects !isAlive().
+    // This function is for recording the explicit death event.
 }
 
 

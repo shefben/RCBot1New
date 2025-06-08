@@ -345,6 +345,9 @@ public: // Constants for Entity Interaction Novelty
 
 public: // Game Event Recording
     void recordGameEvent(const GameEvent& event);
+    // Methods to be called by the game-specific bot class when these events occur
+    void BotTakeDamage(edict_t* pInflictor, edict_t* pAttacker, float flDamage, int bitsDamageType);
+    void BotKilled(edict_t* pKiller, int realVictimIsKiller);
     void ProcessDeathInvolvingBot(edict_t* pOtherPlayer, bool bBotWasKilled, const Vector& deathLocation); // For opponent modeling
 
 public: // Constants for Opponent Modeling
